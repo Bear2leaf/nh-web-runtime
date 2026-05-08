@@ -109,14 +109,13 @@ make -j CROSS_TO_WASM=1 all 2>&1 | tee /tmp/build.log
 
 # Step 5: Restore winshim.c to original state
 log_info "Step 5: Restoring winshim.c to original state..."
-if [ -f "win/shim/winshim.c.bak" ]; then
-    cp win/shim/winshim.c.bak win/shim/winshim.c
-    rm win/shim/winshim.c.bak
-    log_info "winshim.c restored successfully"
-elif git checkout win/shim/winshim.c 2>/dev/null; then
+# Always restore from git to ensure clean state
+if git checkout win/shim/winshim.c 2>/dev/null; then
     log_info "winshim.c restored from git"
+    # Also remove any backup file if exists
+    rm -f win/shim/winshim.c.bak
 else
-    log_warn "Could not restore winshim.c (no backup found)"
+    log_warn "Could not restore winshim.c from git"
 fi
 
 # Check if build succeeded
