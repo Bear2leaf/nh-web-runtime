@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetHack Web - 经典地牢探险游戏</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            font-family: 'Courier New', monospace;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .header {
+            background-color: #2a2a2a;
+            padding: 8px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #4a4a4a;
+        }
+        
+        .header h1 {
+            color: #ffcc00;
+            font-size: 1.2em;
+        }
+        
+        /* 状态栏 - 两行布局 */
+        .status-bar {
+            background-color: #222;
+            padding: 5px 15px;
+            font-size: 13px;
+            border-bottom: 1px solid #4a4a4a;
+            line-height: 1.6;
+        }
+        
+        .status-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        
+        .status-item {
+            display: inline-flex;
+            gap: 3px;
+        }
+        
+        .status-label {
+            color: #888;
+        }
+        
+        .status-value {
+            color: #fff;
+            font-weight: bold;
+        }
+        
+        .status-value.hp-good { color: #44ff44; }
+        .status-value.hp-warn { color: #ffff44; }
+        .status-value.hp-bad { color: #ff4444; }
+        
+        .game-container {
+            flex: 1;
+            display: flex;
+            padding: 10px;
+            gap: 10px;
+            min-height: 0;
+        }
+        
+        .main-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 0;
+        }
+        
+        .map-container {
+            flex: 1;
+            background-color: #000;
+            border: 2px solid #4a4a4a;
+            overflow: auto;
+            position: relative;
+            min-height: 200px;
+        }
+        
+        #game-map {
+            font-family: 'DejaVu Sans Mono', 'Consolas', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.1;
+            padding: 8px;
+            white-space: pre;
+            background-color: #000;
+            color: #aaa;
+        }
+        
+        .message-panel {
+            height: 120px;
+            min-height: 80px;
+            background-color: #1a1a1a;
+            border: 2px solid #4a4a4a;
+            overflow-y: auto;
+            padding: 8px;
+            font-size: 13px;
+        }
+        
+        .message-panel .message {
+            padding: 1px 0;
+            border-bottom: 1px dotted #333;
+        }
+        
+        .side-panel {
+            width: 220px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .inventory-panel {
+            flex: 1;
+            background-color: #222;
+            border: 2px solid #4a4a4a;
+            padding: 8px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+        
+        .inventory-panel h3 {
+            color: #ffcc00;
+            margin-bottom: 8px;
+            font-size: 14px;
+            border-bottom: 1px solid #4a4a4a;
+            padding-bottom: 4px;
+        }
+        
+        .inv-item {
+            padding: 3px 0;
+            border-bottom: 1px solid #333;
+            cursor: pointer;
+        }
+
+        .inventory-empty {
+            color: #666;
+            font-style: italic;
+        }
+
+        .inventory-item {
+            padding: 2px 0;
+            border-bottom: 1px solid #333;
+            font-size: 11px;
+        }
+
+        /* 菜单弹窗样式 */
+        .menu-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .menu-modal.hidden {
+            display: none;
+        }
+
+        .menu-content {
+            background-color: #2a2a2a;
+            border: 2px solid #ffcc00;
+            border-radius: 8px;
+            padding: 20px;
+            min-width: 400px;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .menu-title {
+            color: #ffcc00;
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #4a4a4a;
+        }
+
+        .menu-item {
+            padding: 8px 12px;
+            margin: 4px 0;
+            background-color: #1a1a1a;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .menu-item:hover {
+            background-color: #333;
+        }
+
+        .menu-item.selected {
+            background-color: #4a4a00;
+            border-left: 3px solid #ffcc00;
+        }
+
+        .menu-key {
+            color: #ffcc00;
+            font-weight: bold;
+            min-width: 30px;
+            text-align: center;
+            background-color: #333;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .menu-text {
+            color: #e0e0e0;
+            flex: 1;
+        }
+
+        .menu-header {
+            color: #888;
+            font-weight: bold;
+            padding: 10px 0 5px 0;
+            border-bottom: 1px solid #333;
+            margin-top: 10px;
+        }
+
+        .menu-hint {
+            color: #666;
+            font-size: 12px;
+            margin-top: 15px;
+            text-align: center;
+            font-style: italic;
+        }
+        
+        .inv-item:hover { background-color: #333; }
+        .inv-letter { color: #ffcc00; }
+        
+        .help-panel {
+            background-color: #222;
+            border: 2px solid #4a4a4a;
+            padding: 8px;
+            font-size: 11px;
+        }
+        
+        .help-panel h3 {
+            color: #ffcc00;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        
+        .help-row {
+            margin: 3px 0;
+        }
+        
+        .key {
+            background-color: #444;
+            padding: 1px 4px;
+            border-radius: 2px;
+            color: #ffcc00;
+            font-size: 10px;
+        }
+        
+        .input-line {
+            background-color: #333;
+            padding: 8px 15px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            border-top: 1px solid #4a4a4a;
+        }
+        
+        .input-line input {
+            flex: 1;
+            background-color: #1a1a1a;
+            border: 1px solid #4a4a4a;
+            color: #fff;
+            padding: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+        
+        .input-line input:focus {
+            outline: none;
+            border-color: #ffcc00;
+        }
+        
+        .input-line button {
+            background-color: #5a5a5a;
+            border: none;
+            color: #fff;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .input-line button:hover {
+            background-color: #6a6a6a;
+        }
+        
+        /* 加载界面 */
+        .loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            z-index: 1000;
+        }
+        
+        .loading h2 {
+            color: #ffcc00;
+            margin-bottom: 15px;
+        }
+        
+        .loading-text {
+            color: #888;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+        
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #333;
+            border-top: 3px solid #ffcc00;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* YN 询问弹窗 */
+        .yn-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+
+        .yn-modal.hidden {
+            display: none;
+        }
+
+        .yn-content {
+            background-color: #2a2a2a;
+            border: 3px solid #ff6600;
+            border-radius: 10px;
+            padding: 25px;
+            min-width: 350px;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        .yn-question {
+            color: #fff;
+            font-size: 16px;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+
+        .yn-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .yn-btn {
+            background-color: #444;
+            border: 2px solid #666;
+            color: #fff;
+            padding: 10px 20px;
+            font-size: 14px;
+            cursor: pointer;
+            border-radius: 5px;
+            min-width: 50px;
+        }
+
+        .yn-btn:hover {
+            background-color: #555;
+            border-color: #888;
+        }
+
+        .yn-btn.primary {
+            background-color: #ff6600;
+            border-color: #ff8800;
+        }
+
+        .yn-btn.primary:hover {
+            background-color: #ff7700;
+        }
+
+        .yn-hint {
+            color: #888;
+            font-size: 12px;
+            margin-top: 15px;
+        }
+
+        .hidden { display: none !important; }
+        
+        /* 虚拟键盘 */
+        .virtual-keyboard {
+            display: none;
+            grid-template-columns: repeat(10, 1fr);
+            gap: 4px;
+            padding: 8px;
+            background-color: #333;
+            border-top: 2px solid #4a4a4a;
+        }
+        
+        .vkey {
+            background-color: #4a4a4a;
+            border: 1px solid #555;
+            color: #fff;
+            padding: 8px 4px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .vkey:hover { background-color: #555; }
+        .vkey:active { background-color: #ffcc00; color: #000; }
+        
+        @media (max-width: 800px) {
+            .virtual-keyboard { display: grid; }
+            .side-panel { display: none; }
+            .status-bar { font-size: 11px; }
+            #game-map { font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loading">
+        <h2>NetHack Web</h2>
+        <div class="loading-spinner"></div>
+        <div class="loading-text">正在加载 WASM 模块...</div>
+    </div>
+    
+    <div class="header">
+        <h1>NetHack Web v5.0</h1>
+        <div style="color:#888;font-size:12px;">经典地牢探险游戏</div>
+    </div>
+    
+    <div class="status-bar">
+        <div class="status-row">
+            <span class="status-item"><span class="status-label">角色:</span><span class="status-value" id="stat-role">--</span></span>
+            <span class="status-item"><span class="status-label">力量:</span><span class="status-value" id="stat-str">--</span></span>
+            <span class="status-item"><span class="status-label">敏捷:</span><span class="status-value" id="stat-dex">--</span></span>
+            <span class="status-item"><span class="status-label">体质:</span><span class="status-value" id="stat-con">--</span></span>
+            <span class="status-item"><span class="status-label">智力:</span><span class="status-value" id="stat-int">--</span></span>
+            <span class="status-item"><span class="status-label">智慧:</span><span class="status-value" id="stat-wis">--</span></span>
+            <span class="status-item"><span class="status-label">魅力:</span><span class="status-value" id="stat-cha">--</span></span>
+        </div>
+        <div class="status-row">
+            <span class="status-item"><span class="status-label">等级:</span><span class="status-value" id="stat-level">--</span></span>
+            <span class="status-item"><span class="status-label">HP:</span><span class="status-value" id="stat-hp">--</span>/<span class="status-value" id="stat-maxhp">--</span></span>
+            <span class="status-item"><span class="status-label">能量:</span><span class="status-value" id="stat-energy">--</span>/<span class="status-value" id="stat-maxenergy">--</span></span>
+            <span class="status-item"><span class="status-label">金币:</span><span class="status-value" id="stat-gold">$--</span></span>
+            <span class="status-item"><span class="status-label">AC:</span><span class="status-value" id="stat-ac">--</span></span>
+            <span class="status-item"><span class="status-label">位置:</span><span class="status-value" id="stat-dlvl">--</span></span>
+            <span class="status-item"><span class="status-label">状态:</span><span class="status-value" id="stat-hunger">--</span></span>
+        </div>
+    </div>
+
+    <!-- 菜单弹窗 -->
+    <div id="menu-modal" class="menu-modal hidden">
+        <div class="menu-content">
+            <div class="menu-title" id="menu-title">选择</div>
+            <div class="menu-items" id="menu-items"></div>
+            <div class="menu-hint">按对应键选择，空格/回车选第一个，ESC取消</div>
+        </div>
+    </div>
+
+    <!-- 询问弹窗 (yn_function) -->
+    <div id="yn-modal" class="yn-modal hidden">
+        <div class="yn-content">
+            <div class="yn-question" id="yn-question">问题</div>
+            <div class="yn-buttons" id="yn-buttons"></div>
+            <div class="yn-hint">点击按钮或按对应键回答</div>
+        </div>
+    </div>
+
+    <div class="game-container">
+        <div class="main-panel">
+            <div class="map-container">
+                <pre id="game-map">加载中...</pre>
+            </div>
+            <div class="message-panel" id="message-panel">
+                <div class="message">欢迎来到 NetHack Web！</div>
+            </div>
+        </div>
+        <div class="side-panel">
+            <div class="inventory-panel" id="inventory-panel">
+                <h3>物品栏</h3>
+                <div id="inventory-list">空</div>
+            </div>
+            <div class="help-panel">
+                <h3>快捷键</h3>
+                <div class="help-row"><span class="key">hjkl</span> 移动 左下上右</div>
+                <div class="help-row"><span class="key">yubn</span> 斜向移动</div>
+                <div class="help-row"><span class="key">g</span> 拾取物品</div>
+                <div class="help-row"><span class="key">i</span> 查看背包</div>
+                <div class="help-row"><span class="key">e</span> 吃东西</div>
+                <div class="help-row"><span class="key">q</span> 喝药水</div>
+                <div class="help-row"><span class="key">r</span> 读卷轴</div>
+                <div class="help-row"><span class="key">w</span> 装备武器</div>
+                <div class="help-row"><span class="key">W</span> 穿盔甲</div>
+                <div class="help-row"><span class="key">a</span> 使用工具</div>
+                <div class="help-row"><span class="key">o</span> 开门</div>
+                <div class="help-row"><span class="key">s</span> 搜索</div>
+                <div class="help-row"><span class="key">&gt;</span> 下楼梯</div>
+                <div class="help-row"><span class="key">&lt;</span> 上楼梯</div>
+                <div class="help-row"><span class="key">?</span> 帮助</div>
+                <div class="help-row"><span class="key">S</span> 保存退出</div>
+                <div class="help-row"><span class="key">Q</span> 退出</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="input-line">
+        <span style="color:#888">命令:</span>
+        <input type="text" id="command-input" placeholder="输入命令..." autocomplete="off" autofocus>
+        <button onclick="submitCommand()">执行</button>
+        <button onclick="sendKey(27)">Esc</button>
+    </div>
+    
+    <div class="virtual-keyboard">
+        <div class="vkey" data-key="y">y↖</div>
+        <div class="vkey" data-key="k">k↑</div>
+        <div class="vkey" data-key="u">u↗</div>
+        <div class="vkey" data-key="h">h←</div>
+        <div class="vkey" data-key="l">l→</div>
+        <div class="vkey" data-key="b">b↙</div>
+        <div class="vkey" data-key="j">j↓</div>
+        <div class="vkey" data-key="n">n↘</div>
+        <div class="vkey" data-key="g">g拾</div>
+        <div class="vkey" data-key="i">i背</div>
+        <div class="vkey" data-key=".">.等</div>
+        <div class="vkey" data-key=">">>下</div>
+        <div class="vkey" data-key="<">&lt;上</div>
+        <div class="vkey" data-key="e">e吃</div>
+        <div class="vkey" data-key="q">q喝</div>
+        <div class="vkey" data-key="r">r读</div>
+        <div class="vkey" data-key="w">w武</div>
+        <div class="vkey" data-key="o">o开</div>
+        <div class="vkey" data-key="s">s搜</div>
+        <div class="vkey" data-key="?">?帮</div>
+    </div>
+    
+    <script type="module" src="game.js"></script>
+</body>
+</html>
