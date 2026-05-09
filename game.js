@@ -35,6 +35,9 @@ let lastQuery = '';           // 上次询问的问题 (yn_function)
 let currentMenuResolve = null; // 菜单选择的 resolve
 let currentMenuWinId = null;  // 当前菜单窗口ID
 let isInventoryMenuFlag = false; // 当前是否是物品栏菜单
+let lastMenuPrompt = '';        // end_menu 保存的 prompt，供 select_menu 使用
+let mapWinId = null;           // 地图窗口的 winid
+let lastLevelDesc = '';         // 上一次的楼层描述，用于检测换楼层
 
 // ============ 地图渲染状态 ============
 let mapRows = [];             // 二维字符数组 [row][col]
@@ -501,16 +504,19 @@ async function nethackShimCallback(name, ...args) {
 
     case 'shim_create_nhwindow': {
         // args: [type] -> 返回 winid
+        // NetHack 窗口类型: NHW_MESSAGE=0, NHW_STATUS=1, NHW_MAP=2, NHW_MENU=3, NHW_TEXT=4, NHW_PERMINVENT=6
         const type = args[0];
         log('create_nhwindow type=' + type);
-        // 返回一个自增的 window id
         if (!nethackShimCallback._nextWinId) nethackShimCallback._nextWinId = 1;
         const winid = nethackShimCallback._nextWinId++;
 
-        // NHW_PERMINVENT = 6 是永久物品栏窗口
-        if (type === 6) {
+        if (type === 6) { // NHW_PERMINVENT
             nethackShimCallback._inventoryWinId = winid;
             log('Inventory window created with id=' + winid);
+        }
+        if (type === 2) { // NHW_MAP = 2
+            mapWinId = winid;
+            log('Map window created with id=' + winid + ' (NHW_MAP)');
         }
         return Promise.resolve(winid);
     }
@@ -519,19 +525,27 @@ async function nethackShimCallback(name, ...args) {
         // args: [winid]
         const winid = args[0];
 
-        // 如果是物品栏窗口，清空物品栏
+        // 物品栏窗口：清空物品栏
         if (winid === nethackShimCallback._inventoryWinId) {
             log('clear_nhwindow: clearing inventory winid=' + winid);
             clearInventory();
-        } else {
-            // 不再清除地图数据，因为会导致视野问题
-            log('clear_nhwindow: winid=' + winid + ' (not clearing map)');
+        }
+        // 地图窗口：cls() 调用 clear_nhwindow(WIN_MAP) 来清空地图
+        // cls() 只在楼层切换(docrt)、被吞入(swallow)等特殊场景调用，正常移动不会触发
+        // 清空后 NetHack 会通过 show_glyph + flush_screen 重新绘制可见区域
+        if (winid === mapWinId) {
+            log('clear_nhwindow: clearing MAP winid=' + winid);
+            for (let y = 0; y < MAP_HEIGHT; y++) {
+                for (let x = 0; x < MAP_WIDTH; x++) {
+                    mapRows[y][x] = ' ';
+                    mapColors[y][x] = 0;
+                }
+            }
         }
         return Promise.resolve();
     }
 
     case 'shim_display_nhwindow': {
-        const winid = args[0];
         renderMap();
         return Promise.resolve();
     }
@@ -599,8 +613,10 @@ async function nethackShimCallback(name, ...args) {
 
     case 'shim_add_menu': {
         // args: [winid, glyphinfo, identifier, ch, gch, attr, clr, str, itemflags]
+        // identifier (args[2]) 是 anything 联合体的 a_int 值，用于 select_menu 返回
         const strArg = args[7];
         const ch = args[3]; // 选择键
+        const identifier = args[2]; // 标识符值（a_int）
         const attr = args[5];
         let str = '';
 
@@ -624,6 +640,7 @@ async function nethackShimCallback(name, ...args) {
                              (/^[A-Za-z][a-z]+(s)?$/.test(str) && !chStr);
             menuItems.push({
                 ch: chStr,
+                identifier: identifier,
                 text: str,
                 selected: false,
                 isHeader: isHeader
@@ -661,13 +678,15 @@ async function nethackShimCallback(name, ...args) {
         // 真正的物品栏：isInventoryMenuFlag 为真 且 包含物品分类头
         const isRealInventory = isInventoryMenuFlag && hasInventoryHeaders;
 
+        // 判断是需要选择的操作还是仅仅显示物品栏
+        const isSelectionPrompt = prompt && (prompt.includes('选择') || prompt.includes('Select') || prompt.includes('drop') || prompt.includes('use'));
+
+        // 保存 prompt 供 select_menu 使用
+        lastMenuPrompt = prompt;
+
         log('end_menu: winid=' + winid + ' prompt="' + prompt + '" items=' + menuItems.length +
             ' isInventoryFlag=' + isInventoryMenuFlag + ' hasInvHeaders=' + hasInventoryHeaders +
-            ' isRealInv=' + isRealInventory);
-
-        // 判断是需要选择的操作还是仅仅显示物品栏
-        // 通过 prompt 判断：如果是 "选择:" 则是需要选择的菜单；如果是空或者是其他文本，则是物品栏面板
-        const isSelectionPrompt = prompt && (prompt.includes('选择') || prompt.includes('Select') || prompt.includes('drop') || prompt.includes('use'));
+            ' isRealInv=' + isRealInventory + ' isSelection=' + isSelectionPrompt);
 
         // 如果是真正的物品栏菜单且不需要选择，更新物品栏面板
         if (isRealInventory && !isSelectionPrompt) {
@@ -688,14 +707,8 @@ async function nethackShimCallback(name, ...args) {
                     list.appendChild(div);
                 });
             }
-        } else if (isSelectionPrompt) {
-            // 显示选择弹窗
-            const selectableItems = menuItems.filter(item => item.ch && item.ch !== ' ');
-            log('end_menu: showing selection modal, items=' + selectableItems.length);
-            if (selectableItems.length > 0) {
-                showMenuModal(prompt, menuItems);
-            }
         }
+        // 注意：弹窗显示移到了 select_menu 中，因为需要 select_menu 返回 Promise 等待用户输入
         return Promise.resolve();
     }
 
@@ -719,11 +732,9 @@ async function nethackShimCallback(name, ...args) {
         );
         const isRealInventory = isInventoryMenuFlag && hasInventoryHeaders;
 
-        // 真正的物品栏菜单且不需要选择时，更新物品栏面板
-        // how: 0=NONE, 1=ONE, 2=ANY - 需要选择时显示弹窗
+        // 真正的物品栏菜单且不需要选择时，只更新侧边栏面板
         if (isRealInventory && how === 0) {
-            log('select_menu: inventory menu (no selection needed), updating panel');
-            // 更新物品栏面板
+            log('select_menu: inventory menu (no selection), updating panel');
             const list = $('inventory-list');
             if (list) {
                 list.innerHTML = '';
@@ -739,8 +750,11 @@ async function nethackShimCallback(name, ...args) {
             return Promise.resolve(0);
         }
 
-        // 对于需要选择的物品栏（如丢弃、使用物品），显示选择弹窗
-        // 不修改 isInventoryMenuFlag，只是跳过物品栏面板的判断
+        // 需要用户选择的菜单（how != 0），显示弹窗等待选择
+        if (how === 0) {
+            // how=0 表示只展示不需要选择，直接返回
+            return Promise.resolve(0);
+        }
 
         // 如果没有菜单项，返回 0
         if (menuItems.length === 0) {
@@ -751,6 +765,9 @@ async function nethackShimCallback(name, ...args) {
         clearInputBuffer();
 
         const selectableItems = menuItems.filter(item => item.ch && item.ch !== ' ');
+
+        // 显示弹窗
+        showMenuModal(lastMenuPrompt, menuItems);
 
         // 返回 Promise，等待用户从弹窗选择
         return new Promise((resolve) => {
@@ -791,12 +808,19 @@ async function nethackShimCallback(name, ...args) {
                 }
 
                 if (selectedIdx >= 0 && mod && menuListPtr) {
-                    const menuItemSize = 12;
+                    // menu_item 结构：anything item(8 bytes) + long count(4) + unsigned itemflags(4) = 16 bytes
+                    const menuItemSize = 16;
                     const menuList = mod._malloc(menuItemSize);
                     for (let i = 0; i < menuItemSize; i++) {
                         mod.setValue(menuList + i, 0, 'i8');
                     }
-                    mod.setValue(menuList, menuItems[selectedIdx].ch.charCodeAt(0), 'i8');
+                    // 写入 identifier 到 item.a_int (offset 0, 4 bytes)
+                    // args[2] 传的是 *(int*)identifier，对于 a_char 菜单就是 char 值，对于 a_int 菜单就是枚举值
+                    const itemIdentifier = menuItems[selectedIdx].identifier !== undefined
+                        ? menuItems[selectedIdx].identifier
+                        : menuItems[selectedIdx].ch.charCodeAt(0);
+                    mod.setValue(menuList, itemIdentifier, 'i32');
+                    // count (offset 8, 4 bytes) = 1
                     mod.setValue(menuList + 8, 1, 'i32');
                     mod.setValue(menuListPtr, menuList, '*');
                     resolve(1);
@@ -861,24 +885,18 @@ async function nethackShimCallback(name, ...args) {
         //     unsigned glyphflags;  // offset 12
         //     classic_representation sym; // offset 16
         //       int color;    // offset 16
-        //       int symidx;   // offset 20  <- 符号索引，不是字符
-        // 所以 color 在 offset 16, ttychar 在 offset 4
+        //       int symidx;   // offset 20
         let sym = 0, color = 7;
         if (mod && glyphinfoPtr) {
             try {
-                // 读取 ttychar (int32 at offset 4) - 实际显示的字符
                 sym = mod.getValue(glyphinfoPtr + 4, 'i32');
-                // 读取 color (int32 at offset 16)
-                color = mod.getValue(glyphinfoPtr + 16, 'i32');
-                // 颜色值可能包含标志位，取低 4 位
-                color = color & 0xF;
+                color = mod.getValue(glyphinfoPtr + 16, 'i32') & 0xF;
             } catch (e) {
                 log('读取glyphinfo失败:', e);
             }
         }
 
         const ch = sym > 0 ? String.fromCharCode(sym) : ' ';
-        log('print_glyph decoded: x=' + x + ' y=' + y + ' ch="' + ch + '" (sym=' + sym + ') color=' + color);
 
         if (y >= 0 && y < MAP_HEIGHT && x >= 0 && x < MAP_WIDTH) {
             mapRows[y][x] = ch;
@@ -959,6 +977,9 @@ async function nethackShimCallback(name, ...args) {
             validChars = resp.toLowerCase().replace(/[^a-z?*]/g, '');
         }
 
+        // 方向选择：query 包含 "direction" 时，不弹窗，直接等待键盘输入
+        const isDirectionQuery = !resp && query.toLowerCase().includes('direction');
+
         // 回退：从 query 提取 [abc] 或 (abc) 格式的选项
         if (validChars === 'yn' && query.includes('[') && query.includes(']')) {
             const match = query.match(/\[([^\]]+)\]/);
@@ -978,6 +999,13 @@ async function nethackShimCallback(name, ...args) {
 
         // 清空输入缓冲区，避免残留按键干扰
         clearInputBuffer();
+
+        // 方向选择：不显示 YN 弹窗，直接等待键盘输入
+        // getdir() 在 C 层面处理方向字符和 ESC，返回 27(\033) 可正确取消
+        if (isDirectionQuery) {
+            log('yn_function: direction query, waiting for direct key');
+            return waitForKey();
+        }
 
         // 显示 YN 弹窗
         showYnModal(query, validChars, defaultChar);
@@ -1061,19 +1089,18 @@ async function nethackShimCallback(name, ...args) {
         const shortFields = [1, 2, 3, 4, 5, 6, 11, 12, 16, 17]; // STR, DEX, CON, INT, WIS, CHA, etc
         const intFields = [8, 9, 10, 13, 14, 15, 18, 19, 23, 24]; // 整数类型字段
 
-        // ptrValue 可能是直接值或内存地址
-        // 从日志看，数字字段也是以 ASCII 字符串形式存储
-        // 如 [49,56,0,0] = "18"，不是二进制整数
-        if (typeof ptrValue === 'number' && ptrValue > 65536) {
-            // 所有字段都当作字符串读取，然后转换为数字
+        // ptrValue 是原始指针值（由 getPointerValue 直接传递）
+        // 根据 NetHack 的 status_update 实现，不同字段类型使用不同的 any 联合体成员：
+        // - ANY_STR: 字符串指针 → UTF8ToString
+        // - ANY_INT/ANY_LONG: 整数值，但 NetHack 用 Sprintf 写入 blstats[].val 字符串缓冲区
+        //   所以数字字段也是字符串指针
+        if (typeof ptrValue === 'number' && ptrValue > 65536 && mod) {
             try {
-                const str = mod ? mod.UTF8ToString(ptrValue) : '';
+                const str = mod.UTF8ToString(ptrValue);
                 if (stringFields.includes(fldidx)) {
-                    // 字符串字段直接使用
                     value = str;
                     valueType = 's';
                 } else {
-                    // 数字字段：解析字符串为数字
                     value = parseInt(str) || 0;
                     valueType = 'i';
                 }
@@ -1082,28 +1109,26 @@ async function nethackShimCallback(name, ...args) {
                 valueType = stringFields.includes(fldidx) ? 's' : 'i';
             }
         } else {
-            // 直接值
+            // ptrValue 是直接值（小数字）
             value = ptrValue;
             valueType = stringFields.includes(fldidx) ? 's' : 'i';
         }
 
         // 调试日志 - 详细诊断
-        if ((callback_call_count['shim_status_update'] || 0) < 20) {
-            let memDump = '';
-            if (typeof ptrValue === 'number' && ptrValue > 65536 && mod) {
-                try {
-                    // 读取前4个字节看看内存内容
-                    const b0 = mod.getValue(ptrValue, 'i8');
-                    const b1 = mod.getValue(ptrValue + 1, 'i8');
-                    const b2 = mod.getValue(ptrValue + 2, 'i8');
-                    const b3 = mod.getValue(ptrValue + 3, 'i8');
-                    const i16 = mod.getValue(ptrValue, 'i16');
-                    const i32 = mod.getValue(ptrValue, 'i32');
-                    memDump = ` mem=[${b0},${b1},${b2},${b3}] i16=${i16} i32=${i32}`;
-                } catch(e) { memDump = ' mem=error'; }
-            }
-            log('status_update: fld=' + fldidx + ' raw=' + ptrValue + ' final=' + value + memDump);
+        let memDump = '';
+        if (typeof ptrValue === 'number' && ptrValue > 65536 && mod) {
+            try {
+                // 读取前4个字节看看内存内容
+                const b0 = mod.getValue(ptrValue, 'i8');
+                const b1 = mod.getValue(ptrValue + 1, 'i8');
+                const b2 = mod.getValue(ptrValue + 2, 'i8');
+                const b3 = mod.getValue(ptrValue + 3, 'i8');
+                const i16 = mod.getValue(ptrValue, 'i16');
+                const i32 = mod.getValue(ptrValue, 'i32');
+                memDump = ` mem=[${b0},${b1},${b2},${b3}] i16=${i16} i32=${i32}`;
+            } catch(e) { memDump = ' mem=error'; }
         }
+        log('status_update: fld=' + fldidx + ' raw=' + ptrValue + ' final="' + value + '"' + memDump);
         callback_call_count['shim_status_update'] = (callback_call_count['shim_status_update'] || 0) + 1;
 
         updateStatusUI(fldidx, value, valueType, chg, percent, colorVal);
@@ -1143,81 +1168,39 @@ function updateStatusUI(fldidx, value, valueType, chg, percent, color) {
     // fldidx 是整数 (0-26)
     const displayValue = valueType === 's' ? String(value || '') : String(value || 0);
 
-    // 调试：记录前几次调用
-    const count = callback_call_count['update_ui'] || 0;
-    if (count < 20) {
-        log('updateUI: fld=' + fldidx + ' val=' + displayValue);
-        callback_call_count['update_ui'] = count + 1;
-    }
+    // 记录所有更新调用
+    log('updateUI: fld=' + fldidx + ' val="' + displayValue + '"');
 
-    // 使用数字直接匹配，不使用 BL 对象
     switch (fldidx) {
-        case 0: // BL_TITLE
+        case BL.BL_TITLE:
             setStatusField('stat-role', displayValue);
             break;
-        case 1: // BL_STR
+        case BL.BL_STR:
             setStatusField('stat-str', displayValue);
             break;
-        case 2: // BL_DX
+        case BL.BL_DX:
             setStatusField('stat-dex', displayValue);
             break;
-        case 3: // BL_CO
+        case BL.BL_CO:
             setStatusField('stat-con', displayValue);
             break;
-        case 4: // BL_IN
+        case BL.BL_IN:
             setStatusField('stat-int', displayValue);
             break;
-        case 5: // BL_WI
+        case BL.BL_WI:
             setStatusField('stat-wis', displayValue);
-            break;
-        case 6: // BL_CH
-            setStatusField('stat-cha', displayValue);
-            break;
-        case 11: // BL_ENE
-            setStatusField('stat-energy', displayValue);
-            break;
-        case 12: // BL_ENEMAX
-            setStatusField('stat-maxenergy', displayValue);
-            break;
-        case 13: // BL_XP (经验值，也显示为等级)
-            setStatusField('stat-xp', displayValue);
-            // 如果没有等级字段，用经验值作为等级
-            const currentLevel = document.getElementById('stat-level')?.textContent;
-            if (!currentLevel || currentLevel === '--') {
-                setStatusField('stat-level', displayValue);
-            }
-            break;
-        case 14: // BL_AC
-            setStatusField('stat-ac', displayValue);
-            break;
-        case 15: // BL_HD (等级/Hit Dice)
-            log('BL_HD (level):', displayValue);
-            setStatusField('stat-level', displayValue);
-            break;
-        case 18: // BL_HP
-            setStatusField('stat-hp', displayValue);
-            break;
-        case 19: // BL_HPMAX
-            setStatusField('stat-maxhp', displayValue);
-            break;
-        case 20: // BL_LEVELDESC
-            setStatusField('stat-dlvl', displayValue);
-            break;
-        case 21: // BL_EXP
-            setStatusField('stat-level', displayValue);
-            break;
-        case 7: // BL_ALIGN
-            setStatusField('stat-align', displayValue);
-            break;
             break;
         case BL.BL_CH:
             setStatusField('stat-cha', displayValue);
             break;
-        case BL.BL_HP:
-            setStatusField('stat-hp', displayValue);
+        case BL.BL_ALIGN:
+            setStatusField('stat-align', displayValue);
             break;
-        case BL.BL_HPMAX:
-            setStatusField('stat-maxhp', displayValue);
+        case BL.BL_SCORE:
+            setStatusField('stat-score', displayValue);
+            break;
+        case BL.BL_CAP:
+            setStatusField('stat-cap', displayValue);
             break;
         case BL.BL_GOLD:
             setStatusField('stat-gold', displayValue);
@@ -1234,23 +1217,42 @@ function updateStatusUI(fldidx, value, valueType, chg, percent, color) {
         case BL.BL_AC:
             setStatusField('stat-ac', displayValue);
             break;
-        case BL.BL_LEVELDESC:
-            setStatusField('stat-dlvl', displayValue);
-            break;
-        case BL.BL_EXP:
+        case BL.BL_HD:
             setStatusField('stat-level', displayValue);
+            break;
+        case BL.BL_TIME:
+            setStatusField('stat-time', displayValue);
             break;
         case BL.BL_HUNGER:
             setStatusField('stat-hunger', displayValue);
             break;
-        case BL.BL_ALIGN:
-            setStatusField('stat-align', displayValue);
+        case BL.BL_HP:
+            setStatusField('stat-hp', displayValue);
             break;
-        case BL.BL_SCORE:
-            setStatusField('stat-score', displayValue);
+        case BL.BL_HPMAX:
+            setStatusField('stat-maxhp', displayValue);
             break;
-        case BL.BL_TIME:
-            setStatusField('stat-time', displayValue);
+        case BL.BL_LEVELDESC: {
+            const levelChanged = lastLevelDesc && displayValue !== lastLevelDesc;
+            log('BL_LEVELDESC: last="' + lastLevelDesc + '" curr="' + displayValue + '" changed=' + levelChanged);
+            if (levelChanged) {
+                log('Level changed: clearing map');
+                for (let y = 0; y < MAP_HEIGHT; y++) {
+                    for (let x = 0; x < MAP_WIDTH; x++) {
+                        mapRows[y][x] = ' ';
+                        mapColors[y][x] = 0;
+                    }
+                }
+            }
+            lastLevelDesc = displayValue;
+            setStatusField('stat-dlvl', displayValue);
+            break;
+        }
+        case BL.BL_EXP:
+            setStatusField('stat-level', displayValue);
+            break;
+        case BL.BL_CONDITION:
+            setStatusField('stat-condition', displayValue);
             break;
     }
 }
@@ -1268,14 +1270,9 @@ function initGame() {
             getPointerValue: function(name, ptr, type) {
                 if (!mod || !mod.getValue) return ptr;
 
-                // shim_status_update 特殊处理：第二个参数有时是整数有时是指针
+                // shim_status_update 特殊处理：ptr 直接传递，由 JS 端根据字段类型解析
                 if (name === 'shim_status_update' && type === 'p') {
-                    // 如果 ptr 是小数字，直接返回整数值
-                    if (typeof ptr === 'number' && ptr >= -1000 && ptr <= 99999) {
-                        return ptr;
-                    }
-                    // 否则作为指针读取
-                    return mod.getValue(ptr, 'i32');
+                    return ptr;
                 }
 
                 switch (type) {
