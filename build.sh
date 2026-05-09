@@ -29,13 +29,9 @@ log_error() {
 # Get script directory and find NetHack root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Check if we're in submodules/nh-web-runtime
-if [[ "$SCRIPT_DIR" == */submodules/nh-web-runtime ]]; then
-    NETHACK_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-    log_info "Running from submodule, NetHack root: $NETHACK_ROOT"
-else
-    NETHACK_ROOT="$SCRIPT_DIR"
-fi
+# NetHack is a sibling directory (submodule)
+NETHACK_ROOT="$(cd "$SCRIPT_DIR/NetHack" && pwd)"
+log_info "NetHack root: $NETHACK_ROOT"
 
 cd "$NETHACK_ROOT"
 

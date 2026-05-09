@@ -6,9 +6,11 @@ import sys
 def patch_winshim():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if 'submodules' in script_dir:
+        # Legacy: nh-web-runtime was inside NetHack's submodules/
         nethack_root = os.path.abspath(os.path.join(script_dir, '..', '..'))
     else:
-        nethack_root = script_dir
+        # Current: NetHack is a submodule inside nh-web-runtime/
+        nethack_root = os.path.abspath(os.path.join(script_dir, 'NetHack'))
     
     input_file = os.path.join(nethack_root, "win", "shim", "winshim.c")
     backup_file = os.path.join(nethack_root, "win", "shim", "winshim.c.bak")

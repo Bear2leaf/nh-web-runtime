@@ -1580,7 +1580,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     try {
         log('导入 nethack.js 模块...');
-        const nethackModule = await import('../../targets/wasm/nethack.js');
+        const nethackModule = await import('./NetHack/targets/wasm/nethack.js');
         globalThis.nethackModuleFactory = nethackModule.default;
         log('nethack.js 模块已加载（原始 shim 模式）');
         initGame();
