@@ -35,6 +35,12 @@ log_info "NetHack root: $NETHACK_ROOT"
 
 cd "$NETHACK_ROOT"
 
+# Ensure Lua source is available (needed for build)
+if [ ! -f "lib/lua-5.4.8/src/lua.h" ]; then
+    log_info "Lua source not found, fetching..."
+    make fetch-lua
+fi
+
 # Clean build if requested
 if [ "$1" == "clean" ]; then
     log_info "Cleaning build files..."
