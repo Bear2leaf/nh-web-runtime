@@ -111,17 +111,8 @@ document.addEventListener('keydown', function(e) {
         }
         e.preventDefault();
         e.stopPropagation();
-
         if (S.currentYnResolve) {
-            const ch = String.fromCharCode(keyCode);
-            const chLower = ch.toLowerCase();
-            const isValid = S.currentYnValidChars.includes(chLower) || ch === '*' || ch === '?';
-            log('YN key pressed:', ch, 'keyCode:', keyCode, 'valid:', isValid, 'validChars:', S.currentYnValidChars);
-            if (isValid || keyCode === 27) {
-                const resolve = S.currentYnResolve;
-                S.currentYnResolve = null;
-                resolve(keyCode);
-            }
+            S.currentYnResolve(keyCode);
         }
         return;
     }
@@ -139,9 +130,7 @@ document.addEventListener('keydown', function(e) {
         e.preventDefault();
         e.stopPropagation();
         if (S.currentMenuResolve) {
-            const resolve = S.currentMenuResolve;
-            S.currentMenuResolve = null;
-            resolve(keyCode);
+            S.currentMenuResolve(keyCode);
         }
         return;
     }
@@ -155,14 +144,20 @@ document.addEventListener('keydown', function(e) {
     }
 
     let keyCode;
+    // Ignore modifier-only and special keys
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    const GAME_KEYS = {
+        'Enter': 13, 'Escape': 27, 'Backspace': 8,
+        'ArrowUp': 107, 'ArrowDown': 106, 'ArrowLeft': 104, 'ArrowRight': 108,
+    };
+
     if (e.key.length === 1) {
         keyCode = e.key.charCodeAt(0);
+    } else if (GAME_KEYS[e.key]) {
+        keyCode = GAME_KEYS[e.key];
     } else {
-        const keyMap = {
-            'Enter': 13, 'Escape': 27, 'Backspace': 8, 'Tab': 9,
-            'ArrowUp': 107, 'ArrowDown': 106, 'ArrowLeft': 104, 'ArrowRight': 108,
-        };
-        keyCode = keyMap[e.key] || e.keyCode || e.which;
+        return; // ignore Tab, F1-F12, Shift, CapsLock, etc.
     }
     sendKey(keyCode);
 });

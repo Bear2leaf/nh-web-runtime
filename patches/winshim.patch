@@ -1,0 +1,39 @@
+diff --git a/win/shim/winshim.c b/win/shim/winshim.c
+index a18534d35..c05aebea7 100644
+--- a/win/shim/winshim.c
++++ b/win/shim/winshim.c
+@@ -292,17 +292,26 @@ EM_JS(void, local_callback, (const char *cb_name, const char *shim_name, void *r
+ 
+         // do the callback
+         let userCallback = globalThis[cbName];
+-        userCallback.call(this, name, ... jsArgs).then((retVal) => {
+-            // save the return value
++        if (!userCallback) {
++            console.error("[NH] Callback not found: " + cbName);
++            reentryMutexUnlock();
++            wakeUp();
++            return;
++        }
++        if (name === "shim_get_nh_event") {
++            reentryMutexUnlock();
++            wakeUp();
++            return;
++        }
++        Promise.resolve(userCallback(name, ... jsArgs)).then((retVal) => {
+             setPointerValue(name, ret_ptr, retType, retVal);
+             reentryMutexUnlock();
+-            try {
+-                wakeUp();
+-            } catch (e) {
+-                
+-            }
++            wakeUp();
++        }).catch((err) => {
++            console.error("[NH] Error: " + err);
++            reentryMutexUnlock();
++            wakeUp();
+         });
+-
+         function getArg(name, ptr, type) {
+             return (type === "p") ? getValue(ptr, "*") : getPointerValue(name, getValue(ptr, "*"), type);
+         }

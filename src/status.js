@@ -66,13 +66,14 @@ export function updateStatusUI(fldidx, rawValue, valueType, chg, percent, color)
             setStatusField('stat-maxenergy', displayValue);
             break;
         case BL.BL_XP:
-            setStatusField('stat-xp', displayValue);
+            setStatusField('stat-level', displayValue);
             break;
         case BL.BL_AC:
             setStatusField('stat-ac', displayValue);
             break;
         case BL.BL_HD:
-            setStatusField('stat-level', displayValue);
+            // BL_HD is "hit dice" (monster level when polymorphed), always 0 for normal player
+            // Not shown in UI
             break;
         case BL.BL_TIME:
             setStatusField('stat-time', displayValue);

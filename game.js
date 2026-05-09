@@ -21,8 +21,10 @@ window.addEventListener('unhandledrejection', (e) => {
 
 console.log('[NH] game.js loaded, version 2026-05-09-001');
 
-// Expose public API on global for external callers (e.g. Playwright tests)
-globalThis.sendKey = (await import('./src/input.js')).sendKey;
+// Expose public API on globalThis (lazy, avoids top-level await issues)
+globalThis.sendKey = (key) => {
+    import('./src/input.js').then(m => m.sendKey(key));
+};
 globalThis.nethackShimCallback = nethackShimCallback;
 
 // Boot

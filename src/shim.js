@@ -298,7 +298,7 @@ export async function nethackShimCallback(name, ...args) {
     }
 
     case 'shim_add_menu': {
-        const strArg = args[7], ch = args[3], identifier = args[2], attr = args[5];
+        const strArg = args[7], ch = args[3], acc = args[4], identifier = args[2], attr = args[5];
         let str = '';
         if (typeof strArg === 'string') {
             str = strArg;
@@ -307,9 +307,10 @@ export async function nethackShimCallback(name, ...args) {
         }
         if (str) {
             const chStr = ch ? String.fromCharCode(ch) : '';
-            const isHeader = (ch === 0 || ch === undefined || ch === null) ||
-                (/^[A-Za-z][a-z]+(s)?$/.test(str) && !chStr);
-            S.menuItems.push({ ch: chStr, identifier, text: str, selected: false, isHeader });
+            const accStr = acc ? String.fromCharCode(acc) : '';
+            // A true header: no group accelerator, no selector, no identifier
+            const isHeader = !ch && !acc && !identifier;
+            S.menuItems.push({ ch: chStr, acc: accStr, identifier, text: str, selected: false, isHeader });
         }
         return Promise.resolve();
     }
@@ -390,15 +391,20 @@ export async function nethackShimCallback(name, ...args) {
         if (S.menuItems.length === 0) return Promise.resolve(0);
 
         clearInputBuffer();
-        const selectableItems = S.menuItems.filter(item => item.ch && item.ch !== ' ');
+        const selectableItems = S.menuItems.filter(item => (item.ch || item.acc) && item.ch !== ' ');
         showMenuModal(S.lastMenuPrompt, S.menuItems);
 
         return new Promise((resolve) => {
+            const finish = (val) => {
+                S.currentMenuResolve = null;
+                hideMenuModal();
+                resolve(val);
+            };
             S.currentMenuResolve = (keyCode) => {
                 const ch = String.fromCharCode(keyCode).toLowerCase();
                 log('select_menu: key pressed:', ch, 'keyCode:', keyCode);
 
-                if (keyCode === 27) { resolve(-1); return; }
+                if (keyCode === 27) { finish(-1); return; }
 
                 const isPrintable = (keyCode >= 32 && keyCode <= 126);
                 if (!isPrintable && keyCode !== 27 && keyCode !== 32 && keyCode !== 13) {
@@ -411,7 +417,12 @@ export async function nethackShimCallback(name, ...args) {
                 }
                 let selectedIdx = -1;
                 for (let i = 0; i < S.menuItems.length; i++) {
-                    if (S.menuItems[i].ch && S.menuItems[i].ch.toLowerCase() === String.fromCharCode(code).toLowerCase()) {
+                    const itemCh = S.menuItems[i].ch ? S.menuItems[i].ch.toLowerCase() : '';
+                    const itemAcc = S.menuItems[i].acc ? S.menuItems[i].acc.toLowerCase() : '';
+                    if (itemCh && itemCh === String.fromCharCode(code).toLowerCase()) {
+                        selectedIdx = i; break;
+                    }
+                    if (itemAcc && itemAcc === String.fromCharCode(code).toLowerCase()) {
                         selectedIdx = i; break;
                     }
                 }
@@ -419,15 +430,23 @@ export async function nethackShimCallback(name, ...args) {
                     const menuItemSize = 16;
                     const menuList = S.mod._malloc(menuItemSize);
                     for (let i = 0; i < menuItemSize; i++) S.mod.setValue(menuList + i, 0, 'i8');
-                    const itemIdentifier = S.menuItems[selectedIdx].identifier !== undefined
-                        ? S.menuItems[selectedIdx].identifier
-                        : S.menuItems[selectedIdx].ch.charCodeAt(0);
+                    const selectedItem = S.menuItems[selectedIdx];
+                    let itemIdentifier;
+                    if (selectedItem.identifier !== undefined && selectedItem.identifier !== null) {
+                        itemIdentifier = selectedItem.identifier;
+                    } else if (selectedItem.ch) {
+                        itemIdentifier = selectedItem.ch.charCodeAt(0);
+                    } else if (selectedItem.acc) {
+                        itemIdentifier = selectedItem.acc.charCodeAt(0);
+                    } else {
+                        itemIdentifier = 0;
+                    }
                     S.mod.setValue(menuList, itemIdentifier, 'i32');
                     S.mod.setValue(menuList + 8, 1, 'i32');
                     S.mod.setValue(menuListPtr, menuList, '*');
-                    resolve(1);
+                    finish(1);
                 } else {
-                    resolve(0);
+                    finish(0);
                 }
             };
         });
@@ -544,12 +563,17 @@ export async function nethackShimCallback(name, ...args) {
 
         showYnModal(query, validChars, defaultChar);
         return new Promise((resolve) => {
+            const finish = (val) => {
+                S.currentYnResolve = null;
+                hideYnModal();
+                resolve(val);
+            };
             S.currentYnResolve = (keyCode) => {
                 const ch = String.fromCharCode(keyCode).toLowerCase();
                 log('yn_function: selected', ch);
-                if (keyCode === 27) { resolve('q'.charCodeAt(0)); return; }
+                if (keyCode === 27) { finish('q'.charCodeAt(0)); return; }
                 if (validChars.includes(ch)) {
-                    resolve(keyCode);
+                    finish(keyCode);
                 } else {
                     log('yn_function: invalid key', ch);
                 }

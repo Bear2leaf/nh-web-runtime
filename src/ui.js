@@ -78,14 +78,16 @@ export function showMenuModal(title, items) {
 
     items.forEach(item => {
         const div = document.createElement('div');
+        const hasKey = (item.ch && item.ch !== ' ') || (item.acc && item.acc !== ' ');
+        const keyLabel = (item.ch && item.ch !== ' ') ? item.ch : (item.acc || '');
         if (item.isHeader) {
             div.className = 'menu-header';
             div.textContent = item.text;
-        } else if (item.ch && item.ch !== ' ') {
+        } else if (hasKey) {
             div.className = 'menu-item';
-            div.dataset.key = item.ch;
-            div.innerHTML = `<span class="menu-key">${item.ch}</span><span class="menu-text">${item.text}</span>`;
-            div.onclick = () => selectMenuItem(item.ch);
+            div.dataset.key = keyLabel;
+            div.innerHTML = `<span class="menu-key">${keyLabel}</span><span class="menu-text">${item.text}</span>`;
+            div.onclick = () => selectMenuItem(keyLabel);
         } else {
             div.className = 'menu-row';
             div.style.padding = '4px 12px';
@@ -104,12 +106,9 @@ export function hideMenuModal() {
 }
 
 export function selectMenuItem(keyOrCode) {
-    hideMenuModal();
     if (S.currentMenuResolve) {
-        const resolve = S.currentMenuResolve;
-        S.currentMenuResolve = null;
         const code = typeof keyOrCode === 'string' ? keyOrCode.charCodeAt(0) : keyOrCode;
-        resolve(code);
+        S.currentMenuResolve(code);
     }
 }
 
@@ -146,11 +145,8 @@ export function hideYnModal() {
 }
 
 export function selectYnOption(keyCode) {
-    hideYnModal();
     if (S.currentYnResolve) {
-        const resolve = S.currentYnResolve;
-        S.currentYnResolve = null;
-        resolve(keyCode);
+        S.currentYnResolve(keyCode);
     }
 }
 
