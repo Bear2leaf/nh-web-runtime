@@ -600,7 +600,8 @@ export async function nethackShimCallback(name, ...args) {
     }
 
     case 'shim_delay_output': {
-        return new Promise(resolve => setTimeout(resolve, 50));
+        // Skip delay for e2e speed (was 50ms per call, causing minutes of total delay)
+        return Promise.resolve();
     }
 
     case 'shim_status_init': {

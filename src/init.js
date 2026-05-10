@@ -22,12 +22,21 @@ export function initGame() {
         helpers: {
             getPointerValue,
             setPointerValue,
+            sendKey,
             displayInventory() {
                 if (S.mod && S.mod._display_inventory) S.mod._display_inventory(0, 0);
             },
+            getMap() {
+                // Return a copy of the current map grid (80x21 array of chars)
+                return S.mapRows.map(row => row.slice());
+            },
         },
         constants: {},
-        globals: {},
+        globals: {
+            get inputResolve() { return S.inputResolve; },
+            get inputBufferLen() { return S.inputBuffer.length; },
+            get callback_call_count() { return S.callback_call_count; },
+        },
         pointers: {},
         shimFunctionRunning: null,
         statusValues: {},

@@ -9,7 +9,6 @@
  */
 
 import { initGame } from './src/init.js';
-import { nethackShimCallback } from './src/shim.js';
 
 // Global error handlers
 window.addEventListener('error', (e) => {
@@ -25,7 +24,6 @@ console.log('[NH] game.js loaded, version 2026-05-09-001');
 globalThis.sendKey = (key) => {
     import('./src/input.js').then(m => m.sendKey(key));
 };
-globalThis.nethackShimCallback = nethackShimCallback;
 
 // Boot
 document.addEventListener('DOMContentLoaded', async () => {

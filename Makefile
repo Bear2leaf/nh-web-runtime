@@ -6,6 +6,7 @@
 # Usage:
 #   make            — build nethack.js + nethack.wasm
 #   make clean      — clean all build artifacts
+#   make test       — run Playwright e2e tests
 #   make serve      — start a local HTTP server on port 8080
 
 # ── Paths ────────────────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ EMSDK_ENV   := $(HOME)/emsdk/emsdk_env.sh
 
 # ── Targets ──────────────────────────────────────────────────────────────
 
-.PHONY: all clean serve
+.PHONY: all clean serve test test-node
 
 all: $(WASM_JS)
 
@@ -77,3 +78,22 @@ clean:
 
 serve:
 	python3 -m http.server 8080
+
+# ── Test ─────────────────────────────────────────────────────────────────
+
+TEST_PORT := 8100
+TEST_PID  := $(ROOT)/.test-server.pid
+
+test:
+	@echo "[TEST] Starting HTTP server on port $(TEST_PORT)..."
+	python3 -m http.server $(TEST_PORT) & echo $$! > $(TEST_PID)
+	@sleep 1
+	@echo "[TEST] Running Playwright tests..."
+	npx playwright test e2e/ --reporter=line; RET=$$?; \
+		kill $$(cat $(TEST_PID)) 2>/dev/null; rm -f $(TEST_PID); \
+		exit $$RET
+
+# Node.js test runner (runs nav-ai directly in Node, no browser)
+test-node:
+	@echo "[NODE-TEST] Running Node.js test runner..."
+	@node test/node-runner.js

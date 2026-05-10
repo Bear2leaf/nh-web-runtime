@@ -1,1 +1,7 @@
 node_modules/
+test-results/
+playtest-screenshot.png
+.test-server.pid
+.history/
+*.log
+.NetHack_wizards-*.txt
