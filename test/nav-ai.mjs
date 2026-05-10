@@ -410,7 +410,9 @@
         }
       }
 
-      // ---- Monster: attack if adjacent (skip pets) ----
+      // ---- Monster: attack if adjacent AND we're not in a corridor ----
+      // If we're in a corridor and a monster is blocking, don't fight —
+      // try to move around it or search for hidden doors
       const monster = NH.findNearestMonster(grid, player.x, player.y);
       if (monster) {
         const mdx = Math.abs(monster.x - player.x);
@@ -420,7 +422,26 @@
           const petChars = ['d','c','f','n','q','r','s','t','w','y'];
           if (!petChars.includes(ch)) {
             const idx = DIRS.findIndex(([ddx,ddy]) => ddx === (monster.x - player.x) && ddy === (monster.y - player.y));
-            if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+            // Only attack if not in a corridor (corridor = surrounded by '#' or '|' walls)
+            const inCorridor = (grid[monster.y]||'')[player.x] === '#' ||
+                              (grid[player.y]||'')[monster.x] === '#' ||
+                              (grid[monster.y]||'')[player.x] === '#' ||
+                              (grid[player.y]||'')[monster.x] === '#';
+            if (idx >= 0 && !inCorridor) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+            // In corridor — try to move around the monster
+            if (inCorridor) {
+              const shuffled = shuffleDirs();
+              for (const di of shuffled) {
+                const [ddx, ddy] = DIRS[di];
+                const nx = player.x + ddx, ny = player.y + ddy;
+                if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+                  const nch = (grid[ny]||'')[nx] || ' ';
+                  if (isWalkable(nch) && !(nx === monster.x && ny === monster.y)) {
+                    env.sendKey(KEY[di].charCodeAt(0)); return true;
+                  }
+                }
+              }
+            }
           }
         }
       }
