@@ -85,6 +85,8 @@
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
         if (!isBfsWalkable(ch)) continue;
+        // Skip monsters (but allow target if it's a monster — we'll attack it)
+        if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
         visited[ny][nx] = 1;
         parent[ny][nx] = cur;
         queue.push({x: nx, y: ny});

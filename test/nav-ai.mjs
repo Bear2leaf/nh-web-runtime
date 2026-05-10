@@ -40,6 +40,9 @@
     let lastStairsPos = null;
     let lastDoorDir = null;
     let doorAttemptCount = 0;
+    // Track consecutive corridor navigation failures (declared once, not in block)
+    let corridorFailCount = 0;
+    let lastCorridorTarget = null;
 
     // Oscillation detection: track recent positions to detect looping
     const recentPositions = [];
@@ -86,8 +89,9 @@
       return false;
     }
 
-    // Build an ordered perimeter path around the room using right-hand rule.
+    // Build a limited perimeter path around the room using right-hand rule.
     // Returns array of {x,y} positions along the wall edge, in visit order.
+    // Capped to ~60 positions to avoid spending too many ticks in large rooms.
     function buildWallFollowPath(px, py, grid) {
       // BFS to find all reachable walkable positions adjacent to walls
       const visited = Array.from({length: H}, () => new Uint8Array(W));
@@ -114,13 +118,22 @@
       if (wallAdj.length === 0) return [];
 
       // Sort wall-adjacent positions into perimeter order (clockwise from top-left)
-      // Group by which wall they're adjacent to, then sort along that wall
       wallAdj.sort((a, b) => {
-        // Top wall (y=min, adjacent to '-' above)
         const ay = a.y, by = b.y, ax = a.x, bx = b.x;
         if (ay !== by) return ay - by; // top to bottom
         return ax - bx; // left to right within same row
       });
+
+      // Cap to ~60 positions to avoid spending hundreds of ticks in large rooms
+      if (wallAdj.length > 60) {
+        // Sample evenly across the perimeter
+        const sampled = [];
+        const step = Math.floor(wallAdj.length / 60);
+        for (let i = 0; i < wallAdj.length; i += step) {
+          sampled.push(wallAdj[i]);
+        }
+        return sampled;
+      }
 
       return wallAdj;
     }
@@ -178,6 +191,9 @@
           if (pendingDir !== null) {
             env.sendKey(KEY[pendingDir].charCodeAt(0));
             pendingDir = null;
+          } else if (pendingKickDir !== null) {
+            env.sendKey(KEY[pendingKickDir].charCodeAt(0));
+            pendingKickDir = null;
           } else {
             // No pending direction — cancel
             env.sendKey(27);
@@ -249,8 +265,8 @@
       lastPlayerPos = { ...player };
       if (stuckCount > 400) { stop('stuck'); return false; }
 
-      // ---- Eat when hungry ----
-      if ((isHungry || lowHp) && !noFood && !choked && (tickCount - lastEatTick) > 20) {
+      // ---- Eat when hungry (but not just for low HP — eating doesn't heal) ----
+      if (isHungry && !noFood && !choked && (tickCount - lastEatTick) > 20) {
         lastEatTick = tickCount; choked = false;
         env.sendKey('e'.charCodeAt(0)); return true;
       }
@@ -290,14 +306,15 @@
 
       // ---- Stairs navigation (highest priority) ----
       if (stairs) {
-        wallSearchPhase = false;
-        enclosedTick = 0;
         lastStairsPos = { x: stairs.x, y: stairs.y };
         if (player.x === stairs.x && player.y === stairs.y) {
           env.sendKey(62); return true; // '>'
         }
         const next = bfs(player.x, player.y, stairs.x, stairs.y, grid);
         if (next) {
+          // We have a path to stairs
+          wallSearchPhase = false;
+          enclosedTick = 0;
           const nextCh = (grid[next.y]||'')[next.x] || ' ';
           if (nextCh === '+') {
             env.sendKey('o'.charCodeAt(0));
@@ -306,6 +323,39 @@
           }
           const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
           if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+        } else {
+          // BFS to stairs failed — try to open doors that might be blocking the path
+          // Find doors that are roughly in the direction of the stairs
+          const dx = stairs.x - player.x, dy = stairs.y - player.y;
+          const features = scanMap(grid);
+          const blockingDoors = features.doors.filter(d => {
+            // Door is roughly between player and stairs
+            const doorDx = d.x - player.x, doorDy = d.y - player.y;
+            return (Math.sign(doorDx) === Math.sign(dx) || doorDx === 0) &&
+                   (Math.sign(doorDy) === Math.sign(dy) || doorDy === 0);
+          });
+          if (blockingDoors.length > 0) {
+            // Try the closest blocking door
+            let bestDoor = null, bestDist = Infinity;
+            for (const door of blockingDoors) {
+              const dist = Math.abs(door.x - player.x) + Math.abs(door.y - player.y);
+              if (dist < bestDist) { bestDist = dist; bestDoor = door; }
+            }
+            const ddx = bestDoor.x - player.x, ddy = bestDoor.y - player.y;
+            if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {
+              // Adjacent — open it
+              env.sendKey('o'.charCodeAt(0));
+              pendingDir = DIRS.findIndex(([dx2,dy2]) => dx2===ddx && dy2===ddy);
+              return true;
+            }
+            // Navigate to the door
+            const doorNext = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid);
+            if (doorNext) {
+              const idx = DIRS.findIndex(([ddx2,ddy2]) => ddx2===(doorNext.x-player.x) && ddy2===(doorNext.y-player.y));
+              if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+            }
+          }
+          // Can't reach stairs and no obvious blocking door — fall through to corridor exploration
         }
       }
       // Stairs may have been visible before but not now (monster on top?)
@@ -376,8 +426,6 @@
       }
 
       // Track consecutive corridor navigation failures
-    let corridorFailCount = 0;
-    let lastCorridorTarget = null;
       let nearestCorridor = null, corridorDist = Infinity;
       for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
@@ -393,8 +441,9 @@
       if (nearestCorridor) {
         const next = bfs(player.x, player.y, nearestCorridor.x, nearestCorridor.y, grid);
         if (next) {
-          wallSearchPhase = false;
-          enclosedTick = 0;
+          // Don't reset wallSearchPhase if we're already in wall search —
+          // the corridor might be in a different room we need to reach first
+          if (!wallSearchPhase) enclosedTick = 0;
           corridorFailCount = 0;
           const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
           if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
@@ -415,9 +464,7 @@
             }
           }
           if (bestAdj) {
-            wallSearchPhase = false;
-            enclosedTick = 0;
-            corridorFailCount = 0;
+            if (!wallSearchPhase) { enclosedTick = 0; corridorFailCount = 0; }
             corridorReached = true;
             const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(bestAdj.x-player.x) && ddy===(bestAdj.y-player.y));
             if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
@@ -425,9 +472,7 @@
         }
         // Direct step if adjacent
         if (!corridorReached && corridorDist <= 1) {
-          wallSearchPhase = false;
-          enclosedTick = 0;
-          corridorFailCount = 0;
+          if (!wallSearchPhase) { enclosedTick = 0; corridorFailCount = 0; }
           const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(nearestCorridor.x-player.x) && ddy===(nearestCorridor.y-player.y));
           if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
         }
@@ -464,24 +509,36 @@
       const isEnclosed = !stairs && features.doors.length === 0 && nearestCorridor === null;
       if (isEnclosed) {
         enclosedTick++;
-      } else {
+      } else if (!wallSearchPhase) {
+        // Only reset enclosed tracking if we're not actively in wall-search
         enclosedTick = 0;
-        wallSearchPhase = false;
       }
 
-      // Start wall search if enclosed or oscillating
+      // Start wall search if enclosed or oscillating (oscillation triggers regardless of enclosure)
       if ((isEnclosed && enclosedTick > 15) || isOscillating) {
         if (!wallSearchPhase) {
           // Initialize wall-following path
           wallFollowPath = buildWallFollowPath(player.x, player.y, grid);
           wallFollowIdx = 0;
           wallSearchPhase = true;
-          console.log(`[NAV] Wall search started: ${wallFollowPath.length} perimeter positions`);
+          console.log(`[NAV] Wall search started (enclosed=${isEnclosed} oscillating=${isOscillating}): ${wallFollowPath.length} perimeter positions`);
         }
       }
 
       if (wallSearchPhase) {
         wallSearchStep++;
+
+        // If wall search was triggered by oscillation and we've completed a perimeter pass,
+        // or if we've been in wall-search for a long time, yield to corridor exploration
+        if (isOscillating && (wallFollowPasses >= 1 || wallSearchStep > 100)) {
+          wallSearchPhase = false;
+          wallFollowPath = [];
+          wallFollowIdx = 0;
+          wallFollowPasses = 0;
+          wallSearchStep = 0;
+          searchedWallPos.clear();
+          // Fall through — let corridor/other logic take over
+        }
 
         // Teleport fallback: if we've done 2 full passes with no results, try teleport
         if (wallFollowPasses >= 2 && teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
@@ -550,8 +607,9 @@
           }
         }
 
-        // Every 2nd tick while navigating: search if adjacent to wall
-        if (wallSearchStep % 2 === 0 && isAdjacentToWall(player.x, player.y, grid)) {
+        // Every 4th tick while navigating: search if adjacent to wall
+        // (Reduce search frequency so AI moves more)
+        if (wallSearchStep % 4 === 0 && isAdjacentToWall(player.x, player.y, grid)) {
           const tKey = player.x + ',' + player.y;
           if (!searchedWallPos.has(tKey)) {
             searchesAtCurrentPos = (lastWallPosKey === curKey) ? searchesAtCurrentPos + 1 : 1;
@@ -559,6 +617,34 @@
             lastSearchTick = tickCount;
             env.sendKey('s'.charCodeAt(0));
             return true;
+          }
+        }
+
+        // If search just revealed a door or stairs, navigate to it immediately
+        if (lastSearchTick > 0 && tickCount === lastSearchTick + 1 && features) {
+          // Prioritize stairs over doors
+          if (features.stairsDown.length > 0) {
+            const stairs = features.stairsDown[0];
+            const next = bfs(player.x, player.y, stairs.x, stairs.y, grid);
+            if (next) {
+              const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
+              if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+            }
+          }
+          // Navigate to nearest newly revealed door
+          if (features.doors.length > 0) {
+            let bestDoor = null, bestDist = Infinity;
+            for (const door of features.doors) {
+              const dist = Math.abs(door.x - player.x) + Math.abs(door.y - player.y);
+              if (dist < bestDist) { bestDist = dist; bestDoor = door; }
+            }
+            if (bestDoor) {
+              const doorNext = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid);
+              if (doorNext) {
+                const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(doorNext.x-player.x) && ddy===(doorNext.y-player.y));
+                if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+              }
+            }
           }
         }
 
