@@ -520,7 +520,17 @@ export async function nethackShimCallback(name, ...args) {
         } else if (query.includes('Really step')) {
             autoChar = 'y'.charCodeAt(0); // Walk onto traps rather than get stuck
         } else if (query.toLowerCase().includes('what do you want to eat')) {
-            autoChar = 'a'.charCodeAt(0); // Eat from floor (most common food source)
+            // Parse valid food choices from the prompt, e.g. [fg or ?*] means f or g are food items
+            let foodChar = defaultChar;
+            const choiceMatch = query.match(/\[([^\]]+)\]/);
+            if (choiceMatch) {
+                const options = choiceMatch[1].replace(/\s+or\s+/g, '').replace(/[^a-z?*]/gi, '');
+                // Pick the first letter that's not '?' or '*' (those are help/all commands)
+                for (const c of options) {
+                    if (c !== '?' && c !== '*') { foodChar = c.charCodeAt(0); break; }
+                }
+            }
+            autoChar = foodChar;
         } else {
             autoChar = defaultChar;
         }

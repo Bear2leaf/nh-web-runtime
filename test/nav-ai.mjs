@@ -48,6 +48,15 @@
     // Track consecutive corridor navigation failures (declared once, not in block)
     let corridorFailCount = 0;
     let lastCorridorTarget = null;
+    // Track the last direction moved in a corridor (for forward bias)
+    let lastMoveDir = -1;
+    // Track last non-corridor position (to avoid immediately going back)
+    let lastRoomPos = null;
+    // Track whether player was in corridor last tick (persistent across ticks)
+    let wasInCorridorLastTick = false;
+    // Track last sent direction to detect when the same direction fails repeatedly
+    let lastSentDir = -1;
+    let sentDirCount = 0;
 
     // Oscillation detection: track recent positions to detect looping
     const recentPositions = [];
@@ -76,9 +85,10 @@
 
     // Teleport fallback: how many times we've tried teleporting
     let teleportAttempts = 0;
+    let teleportFailed = false; // Set to true if teleport spell is unknown
     const MAX_TELEPORT_ATTEMPTS = 3;
 
-    const MAX_TICKS = 3000;
+    const MAX_TICKS = 20000;
 
     function stop(reason) {
       stopped = true;
@@ -164,10 +174,32 @@
     // Returns true if teleport was sent
     function tryTeleport() {
       if (teleportAttempts >= MAX_TELEPORT_ATTEMPTS) return false;
+      if (teleportFailed) return false;
       teleportAttempts++;
       console.log(`[NAV] Attempting teleport (${teleportAttempts}/${MAX_TELEPORT_ATTEMPTS})`);
       env.sendKey(20); // ^T
       return true;
+    }
+
+    // Detect if player is stuck in a corridor dead-end
+    // Returns exit direction index if in dead-end, or -1 if not
+    function isInDeadEnd(px, py, grid) {
+      const ch = (grid[py]||'')[px] || ' ';
+      if (ch !== '#') return -1; // Only check corridors
+      let walkableDirs = 0;
+      let exitDir = -1;
+      for (let di = 0; di < 8; di++) {
+        const [dx, dy] = DIRS[di];
+        const nx = px + dx, ny = py + dy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        const nch = (grid[ny]||'')[nx] || ' ';
+        if (isWalkable(nch) && !MONSTERS.has(nch)) {
+          walkableDirs++;
+          exitDir = di;
+        }
+      }
+      // Dead end = 1 walkable direction (can only go back)
+      return walkableDirs <= 1 ? exitDir : -1;
     }
 
     function step() {
@@ -238,9 +270,112 @@
       // ---- Read the map ----
       const grid = env.getMap();
       if (!grid || grid.length === 0) { env.sendKey('.'.charCodeAt(0)); return true; }
-      const { player, stairs, food } = findOnMap(grid);
+      let { player, stairs, food } = findOnMap(grid);
       const msgs = env.getRecentMessages(15);
       if (!player) { env.sendKey('.'.charCodeAt(0)); return true; }
+
+      // Scan features once and cache — used by multiple sections below
+      let features = scanMap(grid);
+
+      // Early corridor detection (needed for monster handling and corridor navigation)
+      // Player '@' overwrites the underlying tile, so infer corridor status from cardinal neighbors
+      const playerCh = (grid[player.y]||'')[player.x] || ' ';
+      let cardCorridorCount = 0;
+      let cardFloorCount = 0;
+      for (let di = 0; di < 4; di++) {
+        const [dx, dy] = DIRS[di];
+        const nx = player.x + dx, ny = player.y + dy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        const nch = (grid[ny]||'')[nx] || ' ';
+        if (nch === '#') cardCorridorCount++;
+        if (nch === '.' || nch === '<' || nch === '>' || nch === '%') cardFloorCount++;
+      }
+      const isInCorridor = playerCh === '#' || (cardCorridorCount >= 2 && cardFloorCount === 0);
+
+      // ---- Check for visible corridors on map ----
+      const hasVisibleCorridors = (() => {
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            if ((grid[y]||'')[x] === '#') return true;
+          }
+        }
+        return false;
+      })();
+
+      // ---- Level search timeout: trigger wall search if exploring too long without stairs ----
+      const _noStairsOrDoors = !stairs && features.doors.length === 0;
+      const _levelSearchTimeout = tickCount > 1500 && _noStairsOrDoors;
+      if (_levelSearchTimeout && !wallSearchPhase) {
+        wallFollowPath = buildWallFollowPath(player.x, player.y, grid);
+        wallFollowIdx = 0;
+        wallSearchPhase = true;
+        wallFollowPasses = 0;
+        wallSearchStep = 0;
+        console.log(`[NAV] Level search timeout at tick ${tickCount}: ${wallFollowPath.length} perimeter positions`);
+      }
+      // In corridor with no stairs: try teleport only if stuck for a while
+      if (isInCorridor && stuckCount > 50 && _noStairsOrDoors && teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+        console.log(`[NAV] Stuck in corridor for ${stuckCount} ticks, teleporting`);
+        if (tryTeleport()) return true;
+      }
+
+      // Track corridor/room transitions
+      const wasInCorridor = wasInCorridorLastTick;
+      wasInCorridorLastTick = isInCorridor;
+      if (isInCorridor && !wasInCorridor) {
+        // Just entered corridor from a room
+        lastRoomPos = lastPlayerPos ? { ...lastPlayerPos } : null;
+      }
+      if (!isInCorridor && wasInCorridor) {
+        // Just left corridor, entered a new room
+        lastMoveDir = -1; // Reset corridor direction when entering a new room
+      }
+
+      // Detect pet blocking from recent messages (for 'd' canines etc.)
+      const hadPetBlock = msgs.some(m => m.includes('is in the way') || m.includes('swap places with'));
+
+      // ---- Adjacent monster handling (HIGHEST priority after eat/faint) ----
+      {
+        // Check all 8 directions for adjacent hostile monsters
+        // Use direct grid check instead of findNearestMonster for reliability
+        let adjHostile = null;
+        for (let di = 0; di < 8; di++) {
+          const [ddx, ddy] = DIRS[di];
+          const nx = player.x + ddx, ny = player.y + ddy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (grid[ny]||'')[nx] || ' ';
+          // Monster characters that aren't in PET_CHARS are hostile
+          if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) {
+            // 'd' (canine) can be pet dog or hostile fox — skip if recent messages indicate it's our pet
+            if (ch === 'd' && hadPetBlock) continue;
+            adjHostile = { x: nx, y: ny, ch, di };
+            break;
+          }
+        }
+        if (adjHostile) {
+          const dx = adjHostile.x - player.x;
+          const dy = adjHostile.y - player.y;
+          const _mhp = env.getMaxHp() || 1;
+          const _chp = env.getHp();
+          const _lowHp = _chp / _mhp < 0.5;
+          if (_lowHp) {
+            // Low HP: try to flee from monster (in room or corridor)
+            const fleeDirs = shuffleDirs();
+            for (const fi of fleeDirs) {
+              const [fdx, fdy] = DIRS[fi];
+              if (fdx * dx + fdy * dy >= 0) continue; // move AWAY from monster
+              const nx = player.x + fdx, ny = player.y + fdy;
+              if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+                const ch = (grid[ny]||'')[nx] || ' ';
+                if (isWalkable(ch) && !MONSTERS.has(ch)) { env.sendKey(KEY[fi].charCodeAt(0)); return true; }
+              }
+            }
+          }
+          // Fight the monster — attack in its direction
+          const fightIdx = DIRS.findIndex(([ddx,ddy]) => ddx===dx && ddy===dy);
+          if (fightIdx >= 0) { env.sendKey(KEY[fightIdx].charCodeAt(0)); return true; }
+        }
+      }
 
       // ---- Track recent positions for oscillation detection ----
       recentPositions.push({x: player.x, y: player.y});
@@ -250,12 +385,12 @@
       const currentHp = env.getHp();
       const maxHp = env.getMaxHp();
       const hungerText = env.getHunger();
-      const hpRatio = currentHp / maxHp;
-      const lowHp = hpRatio < 0.8; // flee at 80% HP — prioritize survival
-      const hungerNum = parseInt(hungerText) || 0;
+      const hpRatio = maxHp > 0 ? currentHp / maxHp : 1;
+      const lowHp = hpRatio < 0.5; // flee/avoid combat when HP < 50%
+      const fightHp = hpRatio >= 0.5; // fight only when HP >= 50%
       const hungerTrimmed = (hungerText || '').trim();
       // Detect hunger from status field (values include "Hungry  ", "Weak    ", "Fainted ")
-      const isHungry = hungerNum >= 1 || hungerTrimmed === 'Hungry' || hungerTrimmed === 'Weak' || hungerTrimmed === 'Fainted' || hungerTrimmed === 'Fainting';
+      const isHungry = hungerTrimmed === 'Hungry' || hungerTrimmed === 'Weak' || hungerTrimmed === 'Fainted' || hungerTrimmed === 'Fainting';
       // Also check messages for more reliable detection
       const hungerFromMsgs = msgs.some(m =>
         m.toLowerCase().includes('hungry') || m.toLowerCase().includes('weak') ||
@@ -265,6 +400,13 @@
       // Debug: log hunger state every 200 ticks
       if (tickCount % 200 === 0) console.log(`[NAV-DEBUG] hunger="${hungerTrimmed}" isHungry=${isHungry} fromMsgs=${hungerFromMsgs} combined=${isHungryCombined}`);
       const noFood = msgs.some(m => m.includes("don't have anything to eat"));
+      // Detect teleport failure — player doesn't have teleport ability
+      if (msgs.some(m => m.includes("don't know that spell") || m.includes("You can't teleport"))) {
+        if (!teleportFailed) {
+          teleportFailed = true;
+          console.log('[NAV] Teleport failed — player lacks teleport ability, disabling future attempts');
+        }
+      }
       const justChoked = msgs.some(m => m.includes('choke') || m.includes('choking'));
       if (justChoked) choked = true;
 
@@ -284,74 +426,43 @@
       // ---- Stuck detection (no position change) ----
       const moved = !lastPlayerPos || player.x !== lastPlayerPos.x || player.y !== lastPlayerPos.y;
       if (moved) { stuckCount = 0; doorAttemptCount = 0; }
-      else { stuckCount++; }
+      else if (!wallSearchPhase) { stuckCount++; } // Don't count search ticks as stuck
       lastPlayerPos = { ...player };
-      if (stuckCount > 400) { stop('stuck'); return false; }
+      if (stuckCount > 1500) { stop('stuck'); return false; }
 
-      // ---- Eat when hungry (but not just for low HP — eating doesn't heal) ----
-      if (isHungryCombined && !noFood && !choked && (tickCount - lastEatTick) > 20) {
+      // ---- Stuck recovery: same direction failing, or hidden prompt blocking ----
+      if (stuckCount > 20 && (stuckCount % 20 === 0)) {
+        console.log(`[NAV] Stuck recovery: sending ESC at tick=${tickCount} stuck=${stuckCount}`);
+        env.sendKey(27); return true;
+      }
+      if (stuckCount > 40 && !isInCorridor) {
+        console.log(`[NAV] Stuck in room, searching for hidden doors at tick=${tickCount}`);
+        lastSearchTick = tickCount;
+        env.sendKey('s'.charCodeAt(0)); return true;
+      }
+      // If same direction keeps failing, force a different one
+      if (lastMoveDir >= 0 && lastMoveDir === lastSentDir) {
+        sentDirCount++;
+      } else {
+        sentDirCount = 0;
+      }
+      lastSentDir = lastMoveDir;
+      const forcedDirChange = sentDirCount > 3 && lastMoveDir >= 0;
+
+      // ---- Fainted: unconscious, can't act. Just advance time until recovery ----
+      if (hungerTrimmed === 'Fainted') {
+        env.sendKey('.'.charCodeAt(0));
+        return true;
+      }
+
+      // ---- Eat when hungry/weak/fainting (starvation is worse than rotten food) ----
+      const isWeak = hungerTrimmed === 'Weak' || hungerTrimmed === 'Fainting';
+      const eatCooldown = isWeak ? 5 : 20; // Eat faster when weak/fainting
+      if (isHungryCombined && !noFood && !choked && (tickCount - lastEatTick) > eatCooldown) {
         lastEatTick = tickCount; choked = false;
         env.sendKey('e'.charCodeAt(0)); return true;
       }
-      if (!justChoked && choked && (tickCount - lastEatTick) > 10) { choked = false; }
-
-      // ---- Adjacent monster avoidance ----
-      {
-        const adjMonster = NH.findNearestMonster(grid, player.x, player.y);
-        if (adjMonster) {
-          const adx = Math.abs(adjMonster.x - player.x);
-          const ady = Math.abs(adjMonster.y - player.y);
-          if (adx <= 1 && ady <= 1 && !PET_CHARS.has((grid[adjMonster.y]||'')[adjMonster.x] || ' ')) {
-            // Monster adjacent - flee at low HP, fight at high HP
-            if (lowHp) {
-              const dx = adjMonster.x - player.x;
-              const dy = adjMonster.y - player.y;
-              const fleeDirs = shuffleDirs();
-              for (const di of fleeDirs) {
-                const [ddx, ddy] = DIRS[di];
-                if (ddx * dx + ddy * dy >= 0) continue;
-                const nx = player.x + ddx, ny = player.y + ddy;
-                if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
-                  const ch = (grid[ny]||'')[nx] || ' ';
-                  if (isWalkable(ch) && !PET_CHARS.has(ch)) { env.sendKey(KEY[di].charCodeAt(0)); return true; }
-                }
-              }
-              // Can't flee — try any walkable direction (might randomly escape)
-              const shuffledDirs = shuffleDirs();
-              for (const di of shuffledDirs) {
-                const [ddx, ddy] = DIRS[di];
-                const nx = player.x + ddx, ny = player.y + ddy;
-                if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
-                  const ch = (grid[ny]||'')[nx] || ' ';
-                  if (isWalkable(ch) && !PET_CHARS.has(ch)) { env.sendKey(KEY[di].charCodeAt(0)); return true; }
-                }
-              }
-              // No valid directions — fight even at low HP
-              const fightDx2 = adjMonster.x - player.x;
-              const fightDy2 = adjMonster.y - player.y;
-              const fightIdx2 = DIRS.findIndex(([ddx,ddy]) => ddx===fightDx2 && ddy===fightDy2);
-              if (fightIdx2 >= 0) { env.sendKey(KEY[fightIdx2].charCodeAt(0)); return true; }
-              env.sendKey('.'.charCodeAt(0));
-              return true;
-            }
-            // High HP - fight back
-            const fightDx = adjMonster.x - player.x;
-            const fightDy = adjMonster.y - player.y;
-            const fightIdx = DIRS.findIndex(([ddx,ddy]) => ddx===fightDx && ddy===fightDy);
-            if (fightIdx >= 0) { env.sendKey(KEY[fightIdx].charCodeAt(0)); return true; }
-            // Can't fight - try to flee any direction
-            const fleeDirs = shuffleDirs();
-            for (const di of fleeDirs) {
-              const [ddx, ddy] = DIRS[di];
-              const nx = player.x + ddx, ny = player.y + ddy;
-              if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
-                const ch = (grid[ny]||'')[nx] || ' ';
-                if (isWalkable(ch) && !PET_CHARS.has(ch)) { env.sendKey(KEY[di].charCodeAt(0)); return true; }
-              }
-            }
-          }
-        }
-      }
+      if (!justChoked && choked && (tickCount - lastEatTick) > 200) { choked = false; } // Wait longer after choking
 
       // ---- Check search results from last tick ----
       if (lastSearchTick > 0 && tickCount === lastSearchTick + 1) {
@@ -374,6 +485,12 @@
           }
           // Set cooldown to prevent immediate re-entry into wall-search
           searchCooldownTick = tickCount;
+          // Re-read stairs position since search may have revealed them
+          const freshMap = findOnMap(grid);
+          if (freshMap.stairs && !stairs) {
+            stairs = freshMap.stairs;
+            console.log(`[NAV] Stairs found at ${freshMap.stairs.x},${freshMap.stairs.y} after search`);
+          }
           // Fall through to re-read the map and navigate to the new feature
         }
         lastSearchTick = 0;
@@ -402,7 +519,6 @@
           // BFS to stairs failed — try to open doors that might be blocking the path
           // Find doors that are roughly in the direction of the stairs
           const dx = stairs.x - player.x, dy = stairs.y - player.y;
-          const features = scanMap(grid);
           const blockingDoors = features.doors.filter(d => {
             // Door is roughly between player and stairs
             const doorDx = d.x - player.x, doorDy = d.y - player.y;
@@ -439,7 +555,6 @@
       }
 
       // ---- Door navigation ----
-      const features = scanMap(grid);
       const untriedDoors = features.doors.filter(d => !triedDoors.has(d.x + ',' + d.y));
       if (untriedDoors.length > 0) {
         wallSearchPhase = false;
@@ -487,159 +602,229 @@
       }
 
       // ---- Corridor/exit navigation (highest priority after doors/stairs) ----
-      // Find exits from the current room: floor tiles adjacent to corridors.
-      // Only use room floor tiles as targets — corridor tiles are pass-through, not destinations.
-      // Also treat pet positions as valid entrances (player can walk onto pets in BFS).
-      const playerCh = (grid[player.y]||'')[player.x] || ' ';
-      const isInCorridor = playerCh === '#';
-      let nearestRoomEntrance = null, roomEntranceDist = Infinity;
-      for (let y = 0; y < H; y++) {
-        for (let x = 0; x < W; x++) {
-          const ch = (grid[y]||'')[x] || ' ';
-          // Floor tile or pet adjacent to a corridor = room entrance/exit
-          const isFloor = (ch === '.' || ch === '<' || ch === '>' || ch === '%' ||
-                          (ch !== ' ' && ch !== '#' && ch !== '|' && ch !== '-' && ch !== '+'));
-          if (isFloor) {
-            let adjacentToCorridor = false;
-            for (const [dx, dy] of DIRS) {
-              const nx = x + dx, ny = y + dy;
-              if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
-                if ((grid[ny]||'')[nx] === '#') { adjacentToCorridor = true; break; }
-              }
-            }
-            if (adjacentToCorridor) {
-              const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
-              if (dist > 0 && dist < roomEntranceDist) {
-                roomEntranceDist = dist;
-                nearestRoomEntrance = { x, y };
-              }
-            }
+      // Skip if wall search is active — wall search takes priority for exploring hidden paths
+
+      // ---- Corridor dead-end detection: backtrack or teleport ----
+      const deadEndExit = isInDeadEnd(player.x, player.y, grid);
+      if (deadEndExit >= 0 && stuckCount > 10) {
+        console.log(`[NAV] Dead-end corridor detected at ${player.x},${player.y}, exit dir=${deadEndExit}`);
+        const [edx, edy] = DIRS[deadEndExit];
+        const enx = player.x + edx, eny = player.y + edy;
+        if (enx >= 0 && enx < W && eny >= 0 && eny < H) {
+          const ech = (grid[eny]||'')[enx] || ' ';
+          if (isWalkable(ech) && !MONSTERS.has(ech)) {
+            env.sendKey(KEY[deadEndExit].charCodeAt(0));
+            return true;
           }
+        }
+        if (teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+          if (tryTeleport()) return true;
         }
       }
-      // If no room entrance found, try to BFS directly to a corridor tile
-      if (!nearestRoomEntrance) {
-        let bestCorridor = null, bestCorridorDist = Infinity;
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            if ((grid[y]||'')[x] !== '#') continue;
-            const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
-            if (dist > 0 && dist < bestCorridorDist) {
-              bestCorridorDist = dist;
-              bestCorridor = { x, y };
-            }
-          }
-        }
-        if (bestCorridor) {
-          const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid);
-          if (next) {
-            if (!wallSearchPhase) enclosedTick = 0;
-            corridorFailCount = 0;
-            const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
-            if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-          }
-        }
-      }
-      if (nearestRoomEntrance) {
-        const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid);
-        if (next) {
-          if (!wallSearchPhase) enclosedTick = 0;
-          corridorFailCount = 0;
-          const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
-          if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-        } else {
-          // BFS to exit failed — try adjacent tiles
-          let bestAdj = null, bestAdjDist = Infinity;
-          for (const [dx, dy] of DIRS) {
-            const ax = nearestRoomEntrance.x + dx, ay = nearestRoomEntrance.y + dy;
-            if (ax < 0 || ax >= W || ay < 0 || ay >= H) continue;
-            const ach = (grid[ay]||'')[ax] || ' ';
-            if (ach === '|' || ach === '-' || ach === ' ') continue;
-            const adjNext = bfs(player.x, player.y, ax, ay, grid);
-            if (adjNext) {
-              const dist = Math.abs(ax - player.x) + Math.abs(ay - player.y);
-              if (dist < bestAdjDist) { bestAdjDist = dist; bestAdj = adjNext; }
-            }
-          }
-          if (bestAdj) {
-            if (!wallSearchPhase) { enclosedTick = 0; corridorFailCount = 0; }
-            const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(bestAdj.x-player.x) && ddy===(bestAdj.y-player.y));
-            if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-          }
-        }
-      } else {
-        corridorFailCount = 0;
+      // Stuck in corridor for too long with no progress — teleport
+      if (isInCorridor && stuckCount > 100 && teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+        console.log(`[NAV] Stuck in corridor for ${stuckCount} ticks, trying teleport`);
+        if (tryTeleport()) return true;
       }
 
-      // ---- Corridor following: when in a corridor with no visible room entrance ----
-      // Prefer to move into corridors, avoiding backtracking to recent positions.
-      // If there's a nearby door we're heading toward, bias toward it.
-      if (!nearestRoomEntrance && isInCorridor) {
-        // Find best direction toward the nearest door we're navigating to
-        const allDoors = features.doors;
-        let targetDx = 0, targetDy = 0, hasTarget = false;
-        if (allDoors.length > 0) {
-          // Pick the nearest door
-          let bestDoorDist = Infinity, bestDx = 0, bestDy = 0;
-          for (const d of allDoors) {
-            const dd = Math.abs(d.x - player.x) + Math.abs(d.y - player.y);
-            if (dd < bestDoorDist) {
-              bestDoorDist = dd;
-              bestDx = d.x - player.x;
-              bestDy = d.y - player.y;
+      let nearestRoomEntrance = null, roomEntranceDist = Infinity;
+      if (!wallSearchPhase) {
+        // ---- Room-to-corridor navigation: only when NOT in a corridor ----
+        if (!isInCorridor) {
+          // First try: find floor tiles adjacent to corridors (room exits)
+          for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+              const ch = (grid[y]||'')[x] || ' ';
+              const isFloor = (ch === '.' || ch === '<' || ch === '>' || ch === '%' ||
+                              (ch !== ' ' && ch !== '#' && ch !== '|' && ch !== '-' && ch !== '+' && ch !== '`'));
+              if (isFloor) {
+                let adjacentToCorridor = false;
+                for (const [dx, dy] of DIRS) {
+                  const nx = x + dx, ny = y + dy;
+                  if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+                    if ((grid[ny]||'')[nx] === '#') { adjacentToCorridor = true; break; }
+                  }
+                }
+                if (adjacentToCorridor) {
+                  const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
+                  if (dist > 0 && dist < roomEntranceDist) {
+                    roomEntranceDist = dist;
+                    nearestRoomEntrance = { x, y };
+                  }
+                }
+              }
             }
           }
-          if (bestDx !== 0 || bestDy !== 0) {
-            const mag = Math.sqrt(bestDx * bestDx + bestDy * bestDy);
-            targetDx = Math.round(bestDx / mag);
-            targetDy = Math.round(bestDy / mag);
-            hasTarget = true;
+
+          // If found a room exit, navigate to it
+          if (nearestRoomEntrance) {
+            const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid);
+            if (next) {
+              enclosedTick = 0;
+              corridorFailCount = 0;
+              let idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
+              if (forcedDirChange && idx === lastSentDir) {
+                // Same direction keeps failing — try another walkable direction
+                const alt = shuffleDirs().find(di => {
+                  const [dx, dy] = DIRS[di];
+                  const nx = player.x + dx, ny = player.y + dy;
+                  if (nx < 0 || nx >= W || ny < 0 || ny >= H) return false;
+                  const ch = (grid[ny]||'')[nx] || ' ';
+                  return isWalkable(ch) && !PET_CHARS.has(ch) && di !== lastSentDir;
+                });
+                if (alt !== undefined) idx = alt;
+              }
+              if (idx >= 0) {
+                lastMoveDir = idx;
+                env.sendKey(KEY[idx].charCodeAt(0)); return true;
+              }
+            }
+          }
+
+          // No room exit found — try to BFS directly to a corridor tile
+          let bestCorridor = null, bestCorridorDist = Infinity;
+          for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+              if ((grid[y]||'')[x] !== '#') continue;
+              const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
+              if (dist > 0 && dist < bestCorridorDist) {
+                bestCorridorDist = dist;
+                bestCorridor = { x, y };
+              }
+            }
+          }
+          if (bestCorridor) {
+            const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid);
+            if (next) {
+              enclosedTick = 0;
+              corridorFailCount = 0;
+              const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
+              if (idx >= 0) {
+                lastMoveDir = idx;
+                env.sendKey(KEY[idx].charCodeAt(0)); return true;
+              }
+            }
           }
         }
-        let bestCorridorDir = -1, bestCorridorScore = -Infinity;
-        for (let di = 0; di < 8; di++) {
-          const [dx, dy] = DIRS[di];
-          const nx = player.x + dx, ny = player.y + dy;
-          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-          const nch = (grid[ny]||'')[nx] || ' ';
-          // Skip walls, doors, space, pets — everything else is OK (including monsters to fight)
-          if (nch === '|' || nch === '-' || nch === ' ' || nch === '+' || PET_CHARS.has(nch)) continue;
-          // Penalize directions we've been in recently
-          let recentPenalty = 0;
-          for (let i = recentPositions.length - 1; i >= Math.max(0, recentPositions.length - 4); i--) {
-            const rp = recentPositions[i];
-            const rdx = rp.x - player.x, rdy = rp.y - player.y;
-            if (rdx === dx && rdy === dy) recentPenalty += 2;
-          }
-          // Prefer directions toward the nearest door
-          let doorBonus = 0;
-          if (hasTarget) {
-            if (dx === targetDx && dy === targetDy) doorBonus = 5;
-            else if (dx === targetDx || dy === targetDy) doorBonus = 2;
-          }
-          // Count corridor tiles ahead (prefer straight corridors)
-          let corridorAhead = 0;
-          for (let step = 1; step <= 3; step++) {
-            const ax = player.x + dx * step, ay = player.y + dy * step;
-            if (ax < 0 || ax >= W || ay < 0 || ay >= H) break;
-            const ach = (grid[ay]||'')[ax] || ' ';
-            if (ach === '#') corridorAhead++; else break;
-          }
-          const score = corridorAhead * 3 + doorBonus - recentPenalty;
-          if (score > bestCorridorScore) { bestCorridorScore = score; bestCorridorDir = di; }
-        }
-        if (bestCorridorDir >= 0) {
-          const [dx, dy] = DIRS[bestCorridorDir];
-          const nx = player.x + dx, ny = player.y + dy;
-          if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
-            const nch = (grid[ny]||'')[nx] || ' ';
-            if (nch === '#' || nch === '.' || nch === '<' || nch === '>' || nch === '%') {
-              env.sendKey(KEY[bestCorridorDir].charCodeAt(0));
+
+        // ---- Corridor following: explore corridors systematically ----
+        // Active when in a corridor — continue deeper, avoid going back.
+        if (isInCorridor) {
+          // Check if we should search from corridor (adjacent to wall, no progress)
+          if (stuckCount > 30 && isAdjacentToWall(player.x, player.y, grid)) {
+            // Try searching for hidden doors from corridor
+            const curKey = player.x + ',' + player.y;
+            if (!searchedWallPos.has(curKey)) {
+              searchedWallPos.add(curKey);
+              console.log(`[NAV] Searching from corridor at ${curKey}`);
+              lastSearchTick = tickCount;
+              env.sendKey('s'.charCodeAt(0));
               return true;
             }
           }
+
+          // Score each direction: prefer continuing forward, avoid recent positions
+          let bestCorridorDir = -1, bestCorridorScore = -Infinity;
+          for (let di = 0; di < 8; di++) {
+            const [dx, dy] = DIRS[di];
+            const nx = player.x + dx, ny = player.y + dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+            const nch = (grid[ny]||'')[nx] || ' ';
+            // Block walls, doors, unseen tiles, and boulders
+            if (nch === '|' || nch === '-' || nch === '+' || nch === ' ' || nch === '`') continue;
+            // Avoid hostile monsters when low HP
+            if (MONSTERS.has(nch) && !PET_CHARS.has(nch) && (nch !== 'd' || !hadPetBlock) && lowHp) continue;
+            // Heavy penalty for recently visited positions (prevent oscillation)
+            let recentPenalty = 0;
+            for (let i = recentPositions.length - 1; i >= Math.max(0, recentPositions.length - 12); i--) {
+              const rp = recentPositions[i];
+              if (rp.x === nx && rp.y === ny) recentPenalty += 5;
+            }
+            // Skip pet tiles entirely if we've been stuck (they cause swap oscillations)
+            if (PET_CHARS.has(nch) || (nch === 'd' && hadPetBlock)) {
+              if (stuckCount > 10) continue;
+              recentPenalty += 20;
+            }
+            // Tile scoring: stairs down >> new room >> corridor
+            let tileBonus = 0;
+            if (nch === '>') tileBonus = 100;      // Stairs down: highest priority
+            else if (nch === '%') tileBonus = 15;   // Food: worth picking up
+            else if (nch === '.') tileBonus = 10;    // Room: explore to find stairs
+            else if (nch === '<') tileBonus = 2;     // Stairs up: very low priority
+            else if (nch === '#') tileBonus = 1;     // Continue in corridor
+            // Pets and other walkable chars on floor tiles get small bonus
+            else if (PET_CHARS.has(nch)) tileBonus = 2;
+
+            // Forward bonus: prefer continuing in the same direction
+            // Reduce forward bias when no stairs found to avoid deep unproductive corridors
+            const forwardBonus = stairs ? 6 : 3;
+            if (lastMoveDir >= 0 && di === lastMoveDir) tileBonus += forwardBonus;
+
+            // Count corridor tiles ahead (prefer straight corridors)
+            let corridorAhead = 0;
+            let monsterAhead = 0;
+            for (let step = 1; step <= 8; step++) {
+              const ax = player.x + dx * step, ay = player.y + dy * step;
+              if (ax < 0 || ax >= W || ay < 0 || ay >= H) break;
+              const ach = (grid[ay]||'')[ax] || ' ';
+              if (ach === '#') { corridorAhead++; continue; }
+              // Monster ahead = danger when HP is low
+              if (MONSTERS.has(ach) && !PET_CHARS.has(ach) && ach !== 'd' && lowHp) monsterAhead++;
+              break;
+            }
+            const score = tileBonus + corridorAhead * 3 - recentPenalty - monsterAhead * 15;
+            // If forced direction change, penalize the stuck direction
+            if (forcedDirChange && di === lastSentDir) {
+              continue; // skip the direction that's been failing
+            }
+            if (score > bestCorridorScore) { bestCorridorScore = score; bestCorridorDir = di; }
+          }
+          if (bestCorridorDir >= 0) {
+            lastMoveDir = bestCorridorDir;
+            env.sendKey(KEY[bestCorridorDir].charCodeAt(0));
+            return true;
+          }
+          // All directions blocked by forcedDirChange — try any walkable direction instead
+          if (forcedDirChange) {
+            const shuffled = shuffleDirs();
+            for (const di of shuffled) {
+              if (di === lastSentDir) continue;
+              const [dx, dy] = DIRS[di];
+              const nx = player.x + dx, ny = player.y + dy;
+              if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+              const ch = (grid[ny]||'')[nx] || ' ';
+              if (isWalkable(ch) && !PET_CHARS.has(ch)) {
+                lastMoveDir = di;
+                env.sendKey(KEY[di].charCodeAt(0)); return true;
+              }
+            }
+          }
+          // All corridor directions exhausted — backtrack to nearest room
+          let nearestFloor = null, floorDist = Infinity;
+          for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+              const ch = (grid[y]||'')[x] || ' ';
+              if (ch === '.' || ch === '>' || ch === '<') {
+                const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
+                if (dist > 0 && dist < floorDist) {
+                  floorDist = dist;
+                  nearestFloor = { x, y };
+                }
+              }
+            }
+          }
+          if (nearestFloor) {
+            const next = bfs(player.x, player.y, nearestFloor.x, nearestFloor.y, grid);
+            if (next) {
+              const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
+              if (idx >= 0) {
+                lastMoveDir = idx;
+                env.sendKey(KEY[idx].charCodeAt(0)); return true;
+              }
+            }
+          }
         }
-      }
+      } // end if (!wallSearchPhase)
 
       // (Monster handling moved to top of step() for immediate response)
 
@@ -668,20 +853,25 @@
       // After a successful search, wait a few ticks for the map to update before re-checking enclosure
       // This prevents re-entering wall-search immediately after finding a hidden door
       const recentSearchCooldown = searchCooldownTick > 0 && tickCount - searchCooldownTick <= 10;
-      const isEnclosed = !stairs && features.doors.length === 0 && !nearestRoomEntrance && !isSurroundedByCorridors && !recentSearchCooldown && !isInCorridor;
+      // Enclosed = no stairs, no doors, not in corridor, and has visible corridors to explore
+      const noStairsOrDoors = !stairs && features.doors.length === 0;
+      // Level search timeout: trigger wall search after exploring long enough
+      const levelSearchTimeout = tickCount > 1500 && noStairsOrDoors;
+      if (tickCount % 100 === 0) console.log(`[NAV-DEBUG] levelSearchTimeout=${levelSearchTimeout} noStairsOrDoors=${noStairsOrDoors} stairs=${!!stairs} doors=${features.doors.length} hasCorridors=${hasVisibleCorridors} wallSearch=${wallSearchPhase}`);
+      const isEnclosed = noStairsOrDoors && !isSurroundedByCorridors && !recentSearchCooldown && !isInCorridor;
       if (isEnclosed) {
         enclosedTick++;
-      } else if (isOscillating) {
-        // Oscillating counts as pseudo-enclosed — increment slower
+      } else if (isOscillating && !isInCorridor && !isSurroundedByCorridors) {
+        // Oscillating in room (not corridor) counts as pseudo-enclosed
         enclosedTick += 0.5;
       } else if (!wallSearchPhase) {
         // Only reset enclosed tracking if we're not actively in wall-search
         enclosedTick = 0;
       }
 
-      // Start wall search if enclosed or oscillating
-      // Oscillation triggers immediately (no enclosedTick threshold needed)
-      if ((isEnclosed && enclosedTick > 15) || isOscillating) {
+      // Start wall search if enclosed, oscillating, or level search timeout
+      // IMPORTANT: Don't start wall search if in a corridor — corridors need to be explored directly
+      if (((isEnclosed && enclosedTick > 200) || (isOscillating && !isInCorridor) || levelSearchTimeout) && !isInCorridor) {
         if (!wallSearchPhase) {
           // Initialize wall-following path
           wallFollowPath = buildWallFollowPath(player.x, player.y, grid);
@@ -690,7 +880,7 @@
           wallFollowPasses = 0;
           wallSearchStep = 0;
           console.log(`[NAV] Wall search started (enclosed=${isEnclosed} oscillating=${isOscillating}): ${wallFollowPath.length} perimeter positions`);
-        } else if (isOscillating) {
+        } else if (isOscillating && !isInCorridor) {
           // Oscillation detected during wall search — don't reset, just continue
           // But update the path if the map has changed
           const newWallFollowPath = buildWallFollowPath(player.x, player.y, grid);
@@ -704,20 +894,20 @@
         }
       }
 
-      if (wallSearchPhase) {
-        wallSearchStep++;
-
-        // If wall search was triggered by oscillation and we've completed a perimeter pass,
-        // or if we've been in wall-search for a long time, yield to corridor exploration
-        if (isOscillating && wallFollowPasses >= 1) {
+      // ---- Corridor oscillation: teleport instead of wall search ----
+      if (isOscillating && isInCorridor && stuckCount > 20 && teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+        if (tryTeleport()) {
           wallSearchPhase = false;
           wallFollowPath = [];
           wallFollowIdx = 0;
           wallFollowPasses = 0;
-          wallSearchStep = 0;
           searchedWallPos.clear();
-          // Fall through — let corridor/other logic take over
+          return true;
         }
+      }
+
+      if (wallSearchPhase) {
+        wallSearchStep++;
 
         // Teleport fallback: if we've done 2 full passes with no results, try teleport
         if (wallFollowPasses >= 2 && teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
@@ -868,9 +1058,12 @@
       // ---- Unexplored boundary ----
       const boundary = NH.findNearestUnexplored(grid, player.x, player.y);
       if (boundary) {
-        const dx = boundary.x - player.x, dy = boundary.y - player.y;
-        const idx = DIRS.findIndex(([ddx,ddy]) => ddx===dx && ddy===dy);
-        if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+        const bch = (grid[boundary.y]||'')[boundary.x] || ' ';
+        if (!PET_CHARS.has(bch) && isWalkable(bch)) {
+          const dx = boundary.x - player.x, dy = boundary.y - player.y;
+          const idx = DIRS.findIndex(([ddx,ddy]) => ddx===dx && ddy===dy);
+          if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+        }
       }
 
       // ---- Fallback: random walkable direction ----
