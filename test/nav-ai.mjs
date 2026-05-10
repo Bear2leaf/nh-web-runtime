@@ -415,7 +415,7 @@
         }
       }
 
-      // ---- Monster: attack if adjacent (skip pets) ----
+      // ---- Monster: only fight if adjacent and blocking our path ----
       const monster = NH.findNearestMonster(grid, player.x, player.y);
       if (monster) {
         const mdx = Math.abs(monster.x - player.x);
@@ -424,41 +424,67 @@
           const ch = (grid[monster.y]||'')[monster.x] || ' ';
           const petChars = ['d','c','f','n','q','r','s','t','w','y'];
           if (!petChars.includes(ch)) {
-            const idx = DIRS.findIndex(([ddx,ddy]) => ddx === (monster.x - player.x) && ddy === (monster.y - player.y));
-            if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-          }
-        }
-      }
-
-      // Track consecutive corridor navigation failures
-      let nearestCorridor = null, corridorDist = Infinity;
-      for (let y = 0; y < H; y++) {
-        for (let x = 0; x < W; x++) {
-          if ((grid[y]||'')[x] === '#') {
-            const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
-            if (dist < corridorDist) {
-              corridorDist = dist;
-              nearestCorridor = { x, y };
+            // Try to move around the monster first
+            const shuffled = shuffleDirs();
+            let movedAround = false;
+            for (const di of shuffled) {
+              const [ddx, ddy] = DIRS[di];
+              const nx = player.x + ddx, ny = player.y + ddy;
+              if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+                const nch = (grid[ny]||'')[nx] || ' ';
+                if (isWalkable(nch) && !(nx === monster.x && ny === monster.y)) {
+                  env.sendKey(KEY[di].charCodeAt(0));
+                  movedAround = true;
+                  return true;
+                }
+              }
+            }
+            // No way around — fight
+            if (!movedAround) {
+              const idx = DIRS.findIndex(([ddx,ddy]) => ddx === (monster.x - player.x) && ddy === (monster.y - player.y));
+              if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
             }
           }
         }
       }
-      if (nearestCorridor) {
-        const next = bfs(player.x, player.y, nearestCorridor.x, nearestCorridor.y, grid);
+
+      // Track corridor navigation: find the nearest floor tile adjacent to a corridor
+      // (room entrance) to navigate toward rooms
+      let nearestRoomEntrance = null, roomEntranceDist = Infinity;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const ch = (grid[y]||'')[x] || ' ';
+          if (ch === '.' || ch === '<' || ch === '>') {
+            // Check if this tile is adjacent to a corridor
+            let adjacentToCorridor = false;
+            for (const [dx, dy] of DIRS) {
+              const nx = x + dx, ny = y + dy;
+              if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+                if ((grid[ny]||'')[nx] === '#') { adjacentToCorridor = true; break; }
+              }
+            }
+            if (adjacentToCorridor) {
+              const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
+              if (dist > 0 && dist < roomEntranceDist) {
+                roomEntranceDist = dist;
+                nearestRoomEntrance = { x, y };
+              }
+            }
+          }
+        }
+      }
+      if (nearestRoomEntrance) {
+        const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid);
         if (next) {
-          // Don't reset wallSearchPhase if we're already in wall search —
-          // the corridor might be in a different room we need to reach first
           if (!wallSearchPhase) enclosedTick = 0;
           corridorFailCount = 0;
           const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
           if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-        }
-        // BFS failed — try to get adjacent to the corridor
-        let corridorReached = false;
-        if (corridorDist > 1) {
+        } else {
+          // BFS to room entrance failed — try adjacent tiles
           let bestAdj = null, bestAdjDist = Infinity;
           for (const [dx, dy] of DIRS) {
-            const ax = nearestCorridor.x + dx, ay = nearestCorridor.y + dy;
+            const ax = nearestRoomEntrance.x + dx, ay = nearestRoomEntrance.y + dy;
             if (ax < 0 || ax >= W || ay < 0 || ay >= H) continue;
             const ach = (grid[ay]||'')[ax] || ' ';
             if (ach === '|' || ach === '-' || ach === ' ') continue;
@@ -470,32 +496,8 @@
           }
           if (bestAdj) {
             if (!wallSearchPhase) { enclosedTick = 0; corridorFailCount = 0; }
-            corridorReached = true;
             const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(bestAdj.x-player.x) && ddy===(bestAdj.y-player.y));
             if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-          }
-        }
-        // Direct step if adjacent
-        if (!corridorReached && corridorDist <= 1) {
-          if (!wallSearchPhase) { enclosedTick = 0; corridorFailCount = 0; }
-          const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(nearestCorridor.x-player.x) && ddy===(nearestCorridor.y-player.y));
-          if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-        }
-        // Corridor visible but completely unreachable — increment fail count
-        const corridorKey = nearestCorridor.x + ',' + nearestCorridor.y;
-        if (lastCorridorTarget === corridorKey) {
-          corridorFailCount++;
-        } else {
-          lastCorridorTarget = corridorKey;
-          corridorFailCount = 1;
-        }
-        if (corridorFailCount > 20) {
-          console.log(`[NAV] Corridor at ${corridorKey} unreachable after ${corridorFailCount} attempts, triggering wall search`);
-          wallSearchPhase = true;
-          if (wallFollowPath.length === 0) {
-            wallFollowPath = buildWallFollowPath(player.x, player.y, grid);
-            wallFollowIdx = 0;
-            console.log(`[NAV] Wall search started: ${wallFollowPath.length} perimeter positions`);
           }
         }
       } else {
@@ -511,7 +513,7 @@
       }
 
       // ---- Enclosed room detection & hidden door search ----
-      const isEnclosed = !stairs && features.doors.length === 0 && nearestCorridor === null;
+      const isEnclosed = !stairs && features.doors.length === 0 && !nearestRoomEntrance;
       if (isEnclosed) {
         enclosedTick++;
       } else if (!wallSearchPhase) {
