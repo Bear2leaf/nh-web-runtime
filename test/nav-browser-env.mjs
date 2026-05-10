@@ -67,6 +67,10 @@
       if (btn) { btn.click(); return true; }
       return false;
     }
+
+    isReadyForInput() {
+      return window.nethackGlobal?.globals?.inputResolve !== null;
+    }
   }
 
   global.NHBrowserEnv = NHBrowserEnv;

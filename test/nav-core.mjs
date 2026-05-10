@@ -12,15 +12,17 @@
   const DIRS = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[1,1],[-1,1]];
   const KEY  = ['h','l','k','j','y','u','n','b'];
   const MONSTERS = new Set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&;:\'I');
+  const PET_CHARS = new Set(['d','c','f','n','q','r','s','t','w','y']); // common pet types
 
   function isWalkable(ch) {
-    if (MONSTERS.has(ch)) return false;
+    if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) return false;
     if (ch === '|' || ch === '-' || ch === ' ') return false;
     return true;
   }
 
   function isBfsWalkable(ch) {
     if (ch === '|' || ch === '-' || ch === ' ') return false;
+    if (ch === '#') return true; // corridors are walkable
     return true;
   }
 
@@ -53,7 +55,7 @@
         if (ch === '+') features.doors.push({x, y});
         if (ch === '|' || ch === '-') features.walls.push({x, y});
         if (ch === '%') features.food.push({x, y});
-        if (MONSTERS.has(ch)) features.monsters.push({x, y, ch});
+        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) features.monsters.push({x, y, ch});
         if (ch === '>') features.stairsDown.push({x, y});
         if (ch === '<') features.stairsUp.push({x, y});
       }
@@ -153,7 +155,7 @@
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const ch = (grid[y] || '')[x] || ' ';
-        if (MONSTERS.has(ch)) {
+        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) {
           const dist = Math.abs(x - px) + Math.abs(y - py);
           if (dist < bestDist) { bestDist = dist; best = { x, y, ch }; }
         }

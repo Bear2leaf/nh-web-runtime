@@ -1,7 +1,11 @@
 import { test, expect } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { completeCharacterCreation, dismissAnyModal } from './helpers.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PAGE_URL = 'http://127.0.0.1:8100/index.html';
 
@@ -109,7 +113,7 @@ test.describe('NetHack Web Runtime', () => {
    * Loads nav-ai.js into the browser and starts the autonomous navigation AI.
    */
   test('walks to next level', async ({ page }) => {
-    test.setTimeout(600_000);
+    test.setTimeout(180_000);
     await page.goto(PAGE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await completeCharacterCreation(page);
     await page.waitForTimeout(500);
@@ -126,10 +130,14 @@ test.describe('NetHack Web Runtime', () => {
 
     const startDlvl = (await page.locator('#stat-dlvl').textContent() || '').trim();
 
+    // Expose a global result that the test can poll
+    await page.evaluate(() => { window.__navResult = null; });
+
     // Inject nav modules in dependency order: core -> strategy -> ai -> browser-env
     for (const filename of ['nav-core.mjs', 'nav-strategy.mjs', 'nav-ai.mjs', 'nav-browser-env.mjs']) {
       const modulePath = path.join(__dirname, filename);
-      const code = fs.readFileSync(modulePath, 'utf-8');
+      const code = fs.readFileSync(modulePath, 'utf-8')
+        .replace(/^export\b[\s\S]*$/m, ''); // Strip ES module exports (multiline-safe)
       await page.evaluate((c) => {
         const script = document.createElement('script');
         script.textContent = c;
@@ -157,6 +165,7 @@ test.describe('NetHack Web Runtime', () => {
       const env = new window.NHBrowserEnv();
       window.startNavigation(start, (reason) => {
         console.log('[NAV] Navigation ended:', reason);
+        window.__navResult = reason;
       }, env);
       return true;
     }, startDlvl);
@@ -177,7 +186,7 @@ test.describe('NetHack Web Runtime', () => {
     });
     console.log('[TEST] AI check after 2s:', JSON.stringify(aiCheck));
 
-    // Periodic debug: log map state every 30 seconds
+    // Periodic debug: log map state every 15 seconds
     const debugInterval = setInterval(async () => {
       try {
         const debug = await page.evaluate(() => {
@@ -185,7 +194,6 @@ test.describe('NetHack Web Runtime', () => {
           const statDlvl = document.getElementById('stat-dlvl')?.textContent?.trim();
           const statHp = document.getElementById('stat-hp')?.textContent?.trim();
           let playerPos = null, stairsDown = null, stairsUp = null;
-          const specials = [];
           const rowSummaries = [];
           if (map) {
             for (let y = 0; y < 21; y++) {
@@ -198,7 +206,6 @@ test.describe('NetHack Web Runtime', () => {
                   if (ch === '@') playerPos = `${x},${y}`;
                   if (ch === '>') stairsDown = `${x},${y}`;
                   if (ch === '<') stairsUp = `${x},${y}`;
-                  if ('@><+'.includes(ch)) specials.push(`${ch}@(${x},${y})`);
                 }
               }
               if (nonSpace.length > 0) rowSummaries.push(`r${y}:${nonSpace.join(',')}`);
@@ -214,37 +221,30 @@ test.describe('NetHack Web Runtime', () => {
           return { dlvl: statDlvl, hp: statHp, player: playerPos, down: stairsDown, up: stairsUp, rows: rowSummaries.length, msgs: last3, stats, inputWaiting };
         });
         console.log(`[TEST-DEBUG] dlvl=${debug.dlvl} hp=${debug.hp} p=${debug.player} dn=${debug.down} up=${debug.up} rows=${debug.rows} input=${debug.inputWaiting} stats=${JSON.stringify(debug.stats)} msgs=${JSON.stringify(debug.msgs)}`);
-        if (debug.rows <= 10 && debug.rows > 0) {
-          const mapContent = await page.evaluate(() => {
-            const map = window.nethackGlobal?.helpers?.getMap();
-            if (!map) return 'no map';
-            const lines = [];
-            for (let y = 0; y < 21; y++) {
-              const rowArr = map[y] || [];
-              const row = (Array.isArray(rowArr) ? rowArr.join('') : String(rowArr)).replace(/ /g, '.');
-              if (row.replace(/\./g, '').length > 0) lines.push(`y${y}: ${row.replace(/\.+/g, (m) => m.length > 3 ? '.' : m)}`);
-            }
-            return lines.join('\n');
-          });
-          console.log(`[TEST-MAP]\n${mapContent}`);
-        }
       } catch (e) { console.log('[TEST-DEBUG] Error:', e.message); }
     }, 15_000);
 
-    // Wait for stat-dlvl to change (up to 10 minutes)
-    await page.waitForFunction(
+    // Wait for either: dlvl change (success), death (HP=0), or nav result (stuck/died/etc)
+    const finalResult = await page.waitForFunction(
       (start) => {
-        const el = document.getElementById('stat-dlvl');
-        return el && el.textContent.trim() !== start;
+        const dlvlEl = document.getElementById('stat-dlvl');
+        const hpEl = document.getElementById('stat-hp');
+        const hp = hpEl ? parseInt(hpEl.textContent.trim()) : 999;
+        const dlvl = dlvlEl ? dlvlEl.textContent.trim() : start;
+        if (dlvl !== start) return { reason: 'descended', dlvl };
+        if (hp === 0) return { reason: 'died', dlvl };
+        if (window.__navResult) return { reason: window.__navResult, dlvl };
+        return null;
       },
       startDlvl,
-      { timeout: 600_000 }
+      { timeout: 180_000, polling: 500 }
     );
 
     clearInterval(debugInterval);
 
-    const finalDlvl = await page.locator('#stat-dlvl').textContent();
-    expect(finalDlvl.trim()).not.toBe(startDlvl);
+    const result = await finalResult.jsonValue();
+    console.log('[TEST] Final result:', JSON.stringify(result));
+    expect(result.reason).toBe('descended');
   });
 
   test('extended play session', async ({ page }) => {

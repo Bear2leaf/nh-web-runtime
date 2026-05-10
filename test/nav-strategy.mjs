@@ -69,31 +69,22 @@
           doorAttemptDir, lastStairsPos, petBlockCount, sendKey, starving } = stateObj;
     let code = null, nextState = 'explore';
 
-    // If monster is adjacent, flee immediately (don't fight — survival > combat)
+    // If monster is adjacent, fight or flee based on HP
     const nearestMonster = findNearestMonster(grid, player.x, player.y);
-    if (nearestMonster) {
-      const mdx = Math.abs(nearestMonster.x - player.x);
-      const mdy = Math.abs(nearestMonster.y - player.y);
-      if (mdx <= 1 && mdy <= 1) {
-        // Find a walkable direction away from the monster
-        let bestDir = -1, bestDist = 0;
-        for (let di = 0; di < 8; di++) {
-          const [ddx, ddy] = DIRS[di];
-          const nx = player.x + ddx, ny = player.y + ddy;
-          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-          const ch = (grid[ny]||'')[nx] || ' ';
-          if (!isWalkable(ch)) continue;
-          const dist = Math.abs(nx - nearestMonster.x) + Math.abs(ny - nearestMonster.y);
-          if (dist > bestDist) { bestDist = dist; bestDir = di; }
-        }
-        if (bestDir >= 0) {
-          code = KEY[bestDir].charCodeAt(0);
-          return { code, state: 'explore', stuckCount: 0, searchCount, exploredDirs: shuffleDirs(), pendingDir: null, doorAttemptDir, petBlockCount };
-        }
+    const monsterAdj = nearestMonster &&
+      Math.abs(nearestMonster.x - player.x) <= 1 &&
+      Math.abs(nearestMonster.y - player.y) <= 1;
+    if (monsterAdj) {
+      // Fight the adjacent monster — move toward it
+      const idx = DIRS.findIndex(([ddx,ddy]) =>
+        ddx === (nearestMonster.x - player.x) && ddy === (nearestMonster.y - player.y));
+      if (idx >= 0) {
+        return { code: KEY[idx].charCodeAt(0), state: 'fight', stuckCount: 0, searchCount: 0,
+                 exploredDirs: shuffleDirs(), pendingDir: null, doorAttemptDir: null, petBlockCount };
       }
     }
 
-    // Try adjacent doors first (highest explore priority) — but skip if monster is adjacent
+    // Try adjacent doors first (highest explore priority)
     const adjDoors = [];
     for (let di = 0; di < 8; di++) {
       const [dx, dy] = DIRS[di];
@@ -101,8 +92,7 @@
       if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
       if ((grid[ny]||'')[nx] === '+') adjDoors.push(di);
     }
-    // Don't try to open doors when a monster is adjacent — fight first
-    if (adjDoors.length > 0 && !nearestMonster) {
+    if (adjDoors.length > 0) {
       code = 'o'.charCodeAt(0);
       pendingDir = adjDoors[0];
       doorAttemptDir = adjDoors[0];
@@ -137,13 +127,26 @@
       }
     }
 
-    // If stuck, search for hidden passages
-    if (stuckCount > 10) {
+    // If very stuck, search for hidden passages (but prefer moving)
+    if (stuckCount > 30) {
       nextState = 'search';
       searchCount = 0;
-      code = 's'.charCodeAt(0);
-      searchCount++;
-      return { code, state: nextState, stuckCount, searchCount, exploredDirs: shuffleDirs(), pendingDir: null, doorAttemptDir, petBlockCount };
+      // Try a random walkable direction instead of 's' (which wastes turns)
+      const shuffled = shuffleDirs();
+      for (const di of shuffled) {
+        const [dx, dy] = DIRS[di];
+        const nx = player.x + dx, ny = player.y + dy;
+        if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+          const ch = (grid[ny]||'')[nx] || ' ';
+          if (isWalkable(ch)) {
+            return { code: KEY[di].charCodeAt(0), state: nextState, stuckCount: 0, searchCount: 1,
+                     exploredDirs: shuffleDirs(), pendingDir: null, doorAttemptDir, petBlockCount };
+          }
+        }
+      }
+      // Only do 's' as a last resort
+      return { code: 's'.charCodeAt(0), state: nextState, stuckCount: 0, searchCount: 1,
+               exploredDirs: shuffleDirs(), pendingDir: null, doorAttemptDir, petBlockCount };
     }
 
     // Try to reach nearest unexplored boundary
@@ -200,13 +203,11 @@
   }
 
   function handleSearch(stateObj, grid, player) {
-    let { searchCount, exploredDirs } = stateObj;
+    let { searchCount, exploredDirs, stuckCount } = stateObj;
     searchCount++;
-    const code = 's'.charCodeAt(0);
 
-    // Every 7 searches, relocate to a new wall-adjacent position
-    if (searchCount > 0 && searchCount % 7 === 0) {
-      // Pick best direction: cell with most wall neighbors
+    // Every 5 searches, relocate to a new wall-adjacent position
+    if (searchCount > 0 && searchCount % 5 === 0) {
       const order = wallFollowOrder(player.x, player.y, grid);
       for (const di of order) {
         const [dx, dy] = DIRS[di];
@@ -214,14 +215,35 @@
         if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
           const ch = (grid[ny]||'')[nx] || ' ';
           if (isWalkable(ch)) {
-            return { code: KEY[di].charCodeAt(0), state: 'search', searchCount, stuckCount: stateObj.stuckCount,
+            return { code: KEY[di].charCodeAt(0), state: 'search', searchCount, stuckCount,
                      exploredDirs: order, pendingDir: null, doorAttemptDir: null, petBlockCount: stateObj.petBlockCount };
           }
         }
       }
     }
 
-    return { code, state: 'search', searchCount, stuckCount: stateObj.stuckCount, exploredDirs, pendingDir: null, doorAttemptDir: null, petBlockCount: stateObj.petBlockCount };
+    // If stuck for a long time, try scanning for hidden doors
+    if (stuckCount > 20 && searchCount % 3 === 0) {
+      return { code: 's'.charCodeAt(0), state: 'search', searchCount, stuckCount,
+               exploredDirs, pendingDir: null, doorAttemptDir: null, petBlockCount: stateObj.petBlockCount };
+    }
+
+    // Default: move to a random walkable adjacent cell (don't stay in place)
+    const shuffled = shuffleDirs();
+    for (const di of shuffled) {
+      const [dx, dy] = DIRS[di];
+      const nx = player.x + dx, ny = player.y + dy;
+      if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+        const ch = (grid[ny]||'')[nx] || ' ';
+        if (isWalkable(ch)) {
+          return { code: KEY[di].charCodeAt(0), state: 'search', searchCount, stuckCount,
+                   exploredDirs, pendingDir: null, doorAttemptDir: null, petBlockCount: stateObj.petBlockCount };
+        }
+      }
+    }
+
+    // No walkable moves — scan
+    return { code: 's'.charCodeAt(0), state: 'search', searchCount, stuckCount, exploredDirs, pendingDir: null, doorAttemptDir: null, petBlockCount: stateObj.petBlockCount };
   }
 
   function handleFight(stateObj, grid, player, stairs) {
