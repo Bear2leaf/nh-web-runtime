@@ -21,9 +21,14 @@
   const CW_NEXT = [2, 3, 5, 6, 0, 1, 7, 4]; // clockwise turn from each dir
   const CCW_NEXT = [4, 5, 0, 1, 7, 6, 2, 3]; // counter-clockwise turn
 
-  const scheduleNext = typeof queueMicrotask === 'function'
-    ? queueMicrotask
-    : (fn) => Promise.resolve().then(fn);
+  // Use setTimeout(0) in browser to yield to WASM input processing;
+  // queueMicrotask in Node for speed.
+  const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
+  const scheduleNext = isBrowser
+    ? (fn) => setTimeout(fn, 0)
+    : (typeof queueMicrotask === 'function'
+        ? queueMicrotask
+        : (fn) => Promise.resolve().then(fn));
 
   function startNavigation(startDlvl, onDone, env) {
     console.log('[NAV] startNavigation called, env=' + typeof env);
@@ -410,9 +415,7 @@
         }
       }
 
-      // ---- Monster: attack if adjacent AND we're not in a corridor ----
-      // If we're in a corridor and a monster is blocking, don't fight —
-      // try to move around it or search for hidden doors
+      // ---- Monster: attack if adjacent (skip pets) ----
       const monster = NH.findNearestMonster(grid, player.x, player.y);
       if (monster) {
         const mdx = Math.abs(monster.x - player.x);
@@ -422,26 +425,7 @@
           const petChars = ['d','c','f','n','q','r','s','t','w','y'];
           if (!petChars.includes(ch)) {
             const idx = DIRS.findIndex(([ddx,ddy]) => ddx === (monster.x - player.x) && ddy === (monster.y - player.y));
-            // Only attack if not in a corridor (corridor = surrounded by '#' or '|' walls)
-            const inCorridor = (grid[monster.y]||'')[player.x] === '#' ||
-                              (grid[player.y]||'')[monster.x] === '#' ||
-                              (grid[monster.y]||'')[player.x] === '#' ||
-                              (grid[player.y]||'')[monster.x] === '#';
-            if (idx >= 0 && !inCorridor) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
-            // In corridor — try to move around the monster
-            if (inCorridor) {
-              const shuffled = shuffleDirs();
-              for (const di of shuffled) {
-                const [ddx, ddy] = DIRS[di];
-                const nx = player.x + ddx, ny = player.y + ddy;
-                if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
-                  const nch = (grid[ny]||'')[nx] || ' ';
-                  if (isWalkable(nch) && !(nx === monster.x && ny === monster.y)) {
-                    env.sendKey(KEY[di].charCodeAt(0)); return true;
-                  }
-                }
-              }
-            }
+            if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
           }
         }
       }
