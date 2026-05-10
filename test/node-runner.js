@@ -110,11 +110,13 @@ console.log('[RUNNER] Starting nav-ai with startDlvl=' + startDlvl);
 startNavigation(startDlvl, (reason) => {
     console.log(`[RUNNER] Navigation ended: ${reason}`);
     const finalDlvl = shimNode.shimState.dlvl;
+    const lastMsgs = shimNode.shimState.messages.slice(-10);
+    console.log(`[RUNNER] Last messages: ${JSON.stringify(lastMsgs)}`);
     if (finalDlvl !== startDlvl) {
         console.log(`[RUNNER] SUCCESS: Descended from ${startDlvl} to ${finalDlvl}`);
         process.exit(0);
     } else if (reason === 'died' || reason === 'game-ended') {
-        console.log(`[RUNNER] Player died on level ${finalDlvl}`);
+        console.log(`[RUNNER] Player died on level ${finalDlvl} (HP=${shimNode.shimState.hp}/${shimNode.shimState.maxHp})`);
         process.exit(1);
     } else {
         console.log(`[RUNNER] Navigation stopped: ${reason}`);

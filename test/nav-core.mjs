@@ -178,7 +178,7 @@
   // Expose to window.NHNav
   global.NHNav = global.NHNav || {};
   Object.assign(global.NHNav, {
-    W, H, DIRS, KEY, MONSTERS,
+    W, H, DIRS, KEY, MONSTERS, PET_CHARS,
     isWalkable, isBfsWalkable,
     findOnMap, scanMap, bfs,
     findNearestUnexplored, getRecentMessages,
@@ -187,6 +187,6 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window);
 
 // ES module exports (for Node)
-export const { W, H, DIRS, KEY, MONSTERS, isWalkable, isBfsWalkable,
+export const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable,
                 findOnMap, scanMap, bfs, findNearestUnexplored,
                 getRecentMessages, isSearchSpam, findNearestMonster, shuffleDirs } = global.NHNav || {};

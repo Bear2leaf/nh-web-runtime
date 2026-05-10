@@ -557,7 +557,7 @@ export async function nethackShimCallback(name, ...args) {
 
     case 'shim_status_update': {
         const fldidx = args[0], ptrValue = args[1];
-        const stringFields = [0, 20, 21, 22, 25, 26];
+        const stringFields = [0, 17, 20, 21, 22, 25, 26];
         let value = '', valueType = 'i';
 
         if (typeof ptrValue === 'number' && ptrValue > 65536 && _mod) {
