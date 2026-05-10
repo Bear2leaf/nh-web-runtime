@@ -36,7 +36,7 @@ A browser + Node.js runtime for NetHack compiled to WebAssembly (WASM) via Emscr
   └───────────────────────────────────────────────────────┘
                               │
   ┌───────────────────────────┴───────────────────────────┐
-  │              Nav-AI (e2e/nav-ai.mjs)                   │
+  │              Nav-AI (test/nav-ai.mjs)                    │
   │  Reads map from shimState via NHNodeEnv adapter.       │
   │  Sends keys via queueMicrotask iteration.              │
   └───────────────────────────────────────────────────────┘
@@ -56,30 +56,24 @@ A browser + Node.js runtime for NetHack compiled to WebAssembly (WASM) via Emscr
 | `ui.js` | DOM helpers (messages, modals, inventory) | `log()`, `addMessage()`, `showYnModal()`, `showMenuModal()`, etc. |
 | `init.js` | Bootstrap: wires everything, starts WASM | `initGame()` |
 
-### Node.js Runtime (`test/`)
+### Node.js Shim (`src/shim-node.js`)
 
 | File | Purpose | Exports |
 |------|---------|---------|
 | `shim-node.js` | WASM callback dispatcher — Node side | `shimState`, `sendKey()`, `waitForKey()`, `nethackShimCallback()`, `setModule()` |
-| `nav-env-node.js` | NavEnv adapter for Node | `NHNodeEnv` class |
-| `node-runner.js` | Node test runner | — |
 
-### Navigation AI (`e2e/`)
-
-| File | Purpose | Exports |
-|------|---------|---------|
-| `nav-core.mjs` | Constants, BFS, map scanning | `W`, `H`, `DIRS`, `KEY`, `MONSTERS`, `bfs()`, `findOnMap()`, etc. |
-| `nav-strategy.mjs` | State machine handlers | `handleExplore()`, `handleSearch()`, `handleFight()`, `handleOpenDoor()`, `handleKickDoor()` |
-| `nav-ai.mjs` | Main loop — orchestrates state machine | `startNavigation(startDlvl, onDone, env)` |
-| `nav-browser-env.mjs` | Browser NavEnv adapter | `NHBrowserEnv` class |
-| `nav-startup-browser.mjs` | Browser startup stub | — |
-
-### Tests
+### Test & Nav AI (`test/`)
 
 | File | Purpose |
 |------|---------|
-| `e2e/playtest.spec.js` | Playwright E2E tests (browser) |
-| `e2e/helpers.js` | Playwright test helpers |
+| `nav-core.mjs` | Constants, BFS, map scanning, monster detection |
+| `nav-strategy.mjs` | State machine handlers (explore/search/fight/door) |
+| `nav-ai.mjs` | Main loop — queueMicrotask-driven, orchestrates state machine |
+| `nav-browser-env.mjs` | Browser NavEnv adapter (reads DOM) |
+| `nav-env-node.js` | Node NavEnv adapter (reads shimState) |
+| `node-runner.js` | Node test runner — loads WASM directly, runs nav-ai |
+| `e2e.spec.js` | Playwright E2E tests (browser) |
+| `helpers.js` | Playwright test helpers |
 
 ## Key Design Decisions
 

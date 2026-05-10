@@ -11,9 +11,9 @@ import shimNode from '../src/shim-node.js';
 import { NHNodeEnv } from './nav-env-node.js';
 
 // Import nav modules in dependency order (IIFEs set globalThis.NHNav)
-import '../e2e/nav-core.mjs';
-import '../e2e/nav-strategy.mjs';
-import { startNavigation } from '../e2e/nav-ai.mjs';
+import './nav-core.mjs';
+import './nav-strategy.mjs';
+import { startNavigation } from './nav-ai.mjs';
 
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';

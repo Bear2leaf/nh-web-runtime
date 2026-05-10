@@ -89,7 +89,7 @@ test:
 	python3 -m http.server $(TEST_PORT) & echo $$! > $(TEST_PID)
 	@sleep 1
 	@echo "[TEST] Running Playwright tests..."
-	npx playwright test e2e/ --reporter=line; RET=$$?; \
+	npx playwright test test/ --reporter=line; RET=$$?; \
 		kill $$(cat $(TEST_PID)) 2>/dev/null; rm -f $(TEST_PID); \
 		exit $$RET
 
