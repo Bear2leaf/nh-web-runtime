@@ -188,7 +188,8 @@
     const { env, player, grid, stuckCount, teleportAttempts, isAdjacentToWall,
             hadPetBlock, lowHp, lastMoveDir, lastSentDir, forcedDirChange,
             recentPositions, corridorVisitCounts, corridorOscillationTick,
-            lastOscHandlerTick, tickCount, searchedWallPos, lastSearchTick } = navCtx;
+            lastOscHandlerTick, tickCount, searchedWallPos, lastSearchTick,
+            stairs } = navCtx;
 
     const cKey = player.x + ',' + player.y;
     const revisits = corridorVisitCounts.get(cKey) || 0;

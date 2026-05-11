@@ -616,7 +616,7 @@ export async function nethackShimCallback(name, ...args) {
         const fldidx = args[0], ptrValue = args[1];
         const chg = args[2] || 0, percent = args[3] || 0, colorVal = args[4] || 0;
 
-        const stringFields = [0, 20, 21, 22, 25, 26];
+        const stringFields = [0, 17, 20, 21, 22, 25, 26];
         let value = '', valueType = 'i';
 
         if (typeof ptrValue === 'number' && ptrValue > 65536 && S.mod) {
@@ -636,17 +636,7 @@ export async function nethackShimCallback(name, ...args) {
             valueType = stringFields.includes(fldidx) ? 's' : 'i';
         }
 
-        let memDump = '';
-        if (typeof ptrValue === 'number' && ptrValue > 65536 && S.mod) {
-            try {
-                const b0 = S.mod.getValue(ptrValue, 'i8');
-                const b1 = S.mod.getValue(ptrValue + 1, 'i8');
-                const b2 = S.mod.getValue(ptrValue + 2, 'i8');
-                const b3 = S.mod.getValue(ptrValue + 3, 'i8');
-                memDump = ` mem=[${b0},${b1},${b2},${b3}] i16=${S.mod.getValue(ptrValue,'i16')} i32=${S.mod.getValue(ptrValue,'i32')}`;
-            } catch (e) { memDump = ' mem=error'; }
-        }
-        log('status_update: fld=' + fldidx + ' raw=' + ptrValue + ' final="' + value + '"' + memDump);
+        log('status_update: fld=' + fldidx + ' final="' + value + '"');
         updateStatusUI(fldidx, value, valueType, chg, percent, colorVal);
         return Promise.resolve();
     }

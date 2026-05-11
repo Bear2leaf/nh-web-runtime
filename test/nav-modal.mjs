@@ -19,15 +19,15 @@
    * Returns true if this handler consumed the tick.
    */
   function handlePendingKeys(navCtx) {
-    const { pendingDir, pendingKickDir } = navCtx;
+    const { env, pendingDir, pendingKickDir } = navCtx;
     if (pendingDir !== null) {
       navCtx.pendingDir = null;
-      navCtx.env.sendKey(KEY[pendingDir].charCodeAt(0));
+      env.sendKey(KEY[pendingDir].charCodeAt(0));
       return true;
     }
     if (pendingKickDir !== null) {
       navCtx.pendingKickDir = null;
-      navCtx.env.sendKey(KEY[pendingKickDir].charCodeAt(0));
+      env.sendKey(KEY[pendingKickDir].charCodeAt(0));
       return true;
     }
     return false;
@@ -38,7 +38,7 @@
    * Returns true if this handler consumed the tick.
    */
   function handleModal(navCtx) {
-    const { env, pendingDir, pendingKickDir } = navCtx;
+    const { env, pendingDir, pendingKickDir, stopped, onDone } = navCtx;
 
     // Direction query (e.g. after failed teleport)
     if (env.isYnVisible()) {
