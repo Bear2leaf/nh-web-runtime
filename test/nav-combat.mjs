@@ -24,6 +24,7 @@
 
     // Check all 8 directions for adjacent hostile monsters
     let adjHostile = null;
+    const stuckCount = navCtx.stuckCount || 0;
     for (let di = 0; di < 8; di++) {
       const [ddx, ddy] = DIRS[di];
       const nx = player.x + ddx, ny = player.y + ddy;
@@ -33,6 +34,11 @@
       if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) {
         // 'd' (canine) can be pet dog or hostile fox — skip if pet
         if (ch === 'd' && hadPetBlock) continue;
+        adjHostile = { x: nx, y: ny, ch, di };
+        break;
+      }
+      // PET_CHARS monster blocking for too long — treat as hostile
+      if (MONSTERS.has(ch) && PET_CHARS.has(ch) && stuckCount > 30) {
         adjHostile = { x: nx, y: ny, ch, di };
         break;
       }

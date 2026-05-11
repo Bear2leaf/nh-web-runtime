@@ -69,6 +69,6 @@ export class NHNodeEnv {
     }
 
     isReadyForInput() {
-        return this._s.inputResolve !== null;
+        return this._s.inputResolve !== null || this._s.ynResolve !== null;
     }
 }

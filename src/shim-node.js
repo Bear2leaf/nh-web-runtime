@@ -102,7 +102,14 @@ function initMap() {
 // ---- Input helpers ---------------------------------------------------------
 
 export function sendKey(keyCode) {
-    log('sendKey:', keyCode, 'inputResolve=', shimState.inputResolve ? 'yes' : 'null');
+    log('sendKey:', keyCode, 'inputResolve=', shimState.inputResolve ? 'yes' : 'null', 'ynResolve=', shimState.ynResolve ? 'yes' : 'null');
+    // If there's a pending YN direction query, resolve it with this key
+    if (shimState.ynResolve) {
+        const resolve = shimState.ynResolve;
+        shimState.ynResolve = null;
+        resolve(keyCode);
+        return;
+    }
     if (shimState.inputResolve) {
         const resolve = shimState.inputResolve;
         shimState.inputResolve = null;
@@ -501,6 +508,14 @@ export async function nethackShimCallback(name, ...args) {
             validChars = resp.toLowerCase().replace(/[^a-z?*]/g, '');
         }
         const isDirectionQuery = !resp && query.toLowerCase().includes('direction');
+        if (isDirectionQuery) {
+            // Direction queries must be handled by the AI (pendingDir mechanism).
+            // Return a promise that gets resolved when the AI sends the direction key.
+            log('yn_function: direction query — waiting for AI to send direction');
+            return new Promise((resolve) => {
+                shimState.ynResolve = resolve;
+            });
+        }
         if (validChars === 'yn' && query.includes('[') && query.includes(']')) {
             const match = query.match(/\[([^\]]+)\]/);
             if (match) {
@@ -518,7 +533,7 @@ export async function nethackShimCallback(name, ...args) {
         if (query.toLowerCase().includes('pick') || query.toLowerCase().includes('select') || query.toLowerCase().includes('swap places')) {
             autoChar = 'y'.charCodeAt(0);
         } else if (query.includes('Really step')) {
-            autoChar = 'y'.charCodeAt(0); // Walk onto traps rather than get stuck
+            autoChar = 'n'.charCodeAt(0); // Don't step on traps
         } else if (query.toLowerCase().includes('what do you want to eat')) {
             log('yn_function: eat prompt detected, query=', query);
             // Parse valid food choices from the prompt, e.g. [fg or ?*] means f or g are food items

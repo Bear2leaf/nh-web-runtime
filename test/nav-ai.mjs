@@ -113,6 +113,13 @@
       teleportAttempts: 0,
       teleportFailed: false,
 
+      // Boulder tracking
+      failedBoulders: new Set(),
+      boulderFailCount: {},
+
+      // Trap avoidance
+      knownTrapPositions: new Set(),
+
       // Derived state (updated each tick in updateMapAndState)
       grid: null,
       player: null,
@@ -169,7 +176,10 @@
       while (head < queue.length) {
         const cur = queue[head++];
         const curCh = (grid[cur.y]||'')[cur.x] || ' ';
-        if (curCh !== '#' && isAdjacentToWall(cur.x, cur.y, grid)) {
+        // Only include walkable tiles (not walls, not corridor, not rock)
+        if (curCh !== '#' && isBfsWalkable(curCh) &&
+            curCh !== '|' && curCh !== '-' &&
+            isAdjacentToWall(cur.x, cur.y, grid)) {
           wallAdj.push(cur);
         }
         for (const [dx, dy] of DIRS) {
@@ -371,6 +381,38 @@
         }
       }
 
+      // Detect unpushable boulders from failure messages
+      if (navCtx.msgs.some(m => m.includes('but in vain'))) {
+        // Find adjacent boulder and mark it as failed
+        for (let di = 0; di < 8; di++) {
+          const [dx, dy] = DIRS[di];
+          const bx = navCtx.player.x + dx, by = navCtx.player.y + dy;
+          if (bx >= 0 && bx < W && by >= 0 && by < H) {
+            const ch = (navCtx.grid[by] || '')[bx] || ' ';
+            if (ch === '`') {
+              const bKey = bx + ',' + by;
+              if (!navCtx.failedBoulders.has(bKey)) {
+                navCtx.failedBoulders.add(bKey);
+                console.log(`[NAV] Marked boulder at ${bx},${by} as unpushable`);
+              }
+            }
+          }
+        }
+      }
+
+      // Detect trap positions from "Really step" messages (trap was avoided by shim saying 'n')
+      const trapMsg = navCtx.msgs.find(m => m.includes('Really step') && m.includes('trap'));
+      if (trapMsg && navCtx.lastMoveDir >= 0) {
+        const [dx, dy] = DIRS[navCtx.lastMoveDir];
+        const trapX = navCtx.player.x + dx;
+        const trapY = navCtx.player.y + dy;
+        const key = trapX + ',' + trapY;
+        if (!navCtx.knownTrapPositions.has(key)) {
+          navCtx.knownTrapPositions.add(key);
+          console.log(`[NAV] Discovered trap at ${trapX},${trapY} (from Really step msg), total=${navCtx.knownTrapPositions.size}`);
+        }
+      }
+
       // Track position changes for stuck detection
       const moved = !navCtx.lastPlayerPos ||
         navCtx.player.x !== navCtx.lastPlayerPos.x ||
@@ -378,7 +420,14 @@
       if (moved) {
         navCtx.stuckCount = 0;
         navCtx.doorAttemptCount = 0;
-      } else if (!navCtx.wallSearchPhase) {
+        // Clear lastStairsPos when player moves away — avoid stale reference
+        if (navCtx.lastStairsPos &&
+            (navCtx.player.x !== navCtx.lastStairsPos.x ||
+             navCtx.player.y !== navCtx.lastStairsPos.y)) {
+          navCtx.lastStairsPos = null;
+        }
+      } else {
+        // Always track stuck count, even during wall search
         navCtx.stuckCount++;
       }
       navCtx.lastPlayerPos = { ...navCtx.player };
@@ -392,6 +441,42 @@
         const posSet = new Set();
         for (const p of navCtx.recentPositions) posSet.add(p.x + ',' + p.y);
         if (posSet.size <= 4) navCtx.isOscillating = true;
+      }
+
+      // ---- Enclosed room detection (runs here so it can trigger wall search
+      // ---- BEFORE lower-priority handlers consume the tick) ----
+      {
+        const noStairsOrDoors = !navCtx.stairs && navCtx.features &&
+          (navCtx.features.doors.length === 0 ||
+           (navCtx.triedDoors && navCtx.triedDoors.size >= navCtx.features.doors.length));
+        const recentSearchCooldown = navCtx.searchCooldownTick > 0 &&
+          navCtx.tickCount - navCtx.searchCooldownTick <= 10;
+        const isEnclosed = noStairsOrDoors && !recentSearchCooldown && !navCtx.isInCorridor;
+        const levelSearchTimeout = navCtx.tickCount > 800 && noStairsOrDoors;
+
+        if (isEnclosed) {
+          navCtx.enclosedTick++;
+        } else if (navCtx.isOscillating && !navCtx.isInCorridor) {
+          navCtx.enclosedTick += 0.5;
+        } else if (noStairsOrDoors && !navCtx.isInCorridor && !navCtx.wallSearchPhase) {
+          navCtx.enclosedTick += 0.1;
+        } else if (!navCtx.wallSearchPhase) {
+          navCtx.enclosedTick = 0;
+        }
+
+        // Trigger wall search when enclosed for sustained period
+        if (!navCtx.wallSearchPhase && !navCtx.isInCorridor) {
+          if ((isEnclosed && navCtx.enclosedTick > 100) ||
+              (levelSearchTimeout && navCtx.enclosedTick > 40)) {
+            navCtx.wallFollowPath = buildWallFollowPath(navCtx.player.x, navCtx.player.y, navCtx.grid);
+            navCtx.wallFollowIdx = 0;
+            navCtx.wallSearchPhase = true;
+            navCtx.wallFollowPasses = 0;
+            navCtx.wallFollowTargetRetries = 0;
+            navCtx.wallSearchStep = 0;
+            console.log(`[NAV] Wall search started in updateMapAndState (enclosed=${isEnclosed} enclosedTick=${navCtx.enclosedTick.toFixed(1)} timeout=${levelSearchTimeout}): ${navCtx.wallFollowPath.length} perimeter positions`);
+          }
+        }
       }
 
       // Periodic debug
@@ -447,7 +532,10 @@
         return true;
       }
 
-      // ---- HP / hunger / eating ----
+      // ---- Food: navigate to & pick up floor food first ----
+      if (NH.handleFood && NH.handleFood(navCtx)) return true;
+
+      // ---- HP / hunger / eating from inventory ----
       if (NH.handleHpHunger && NH.handleHpHunger(navCtx)) return true;
 
       // ---- Combat: adjacent monster ----
@@ -483,35 +571,29 @@
         navCtx.lastSearchTick = 0;
       }
 
-      // ---- Level search timeout ----
-      const noStairsOrDoors = !navCtx.stairs && navCtx.features.doors.length === 0;
-      const levelSearchTimeout = navCtx.tickCount > 800 && noStairsOrDoors;
-      if (navCtx.tickCount % 100 === 0) console.log(`[NAV-DEBUG] levelSearchTimeout=${levelSearchTimeout} noStairsOrDoors=${noStairsOrDoors} stairs=${!!navCtx.stairs} doors=${navCtx.features.doors.length} hasCorridors=${navCtx.hasVisibleCorridors} wallSearch=${navCtx.wallSearchPhase}`);
-      if (levelSearchTimeout && !navCtx.wallSearchPhase && !navCtx.isInCorridor) {
-        navCtx.wallFollowPath = buildWallFollowPath(navCtx.player.x, navCtx.player.y, navCtx.grid);
-        navCtx.wallFollowIdx = 0;
-        navCtx.wallSearchPhase = true;
-        navCtx.wallFollowPasses = 0;
-        navCtx.wallSearchStep = 0;
-        console.log(`[NAV] Level search timeout at tick ${navCtx.tickCount}: ${navCtx.wallFollowPath.length} perimeter positions`);
-      }
-      // Corridor stuck with no stairs: teleport
-      if (navCtx.isInCorridor && navCtx.stuckCount > 80 && noStairsOrDoors && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
-        console.log(`[NAV] Stuck in corridor for ${navCtx.stuckCount} ticks, teleporting`);
-        if (tryTeleport()) return true;
-      }
-
       // ---- Stairs navigation ----
       if (NH.handleStairs && NH.handleStairs(navCtx)) return true;
 
-      // ---- Door navigation ----
-      if (NH.handleDoors && NH.handleDoors(navCtx)) return true;
+      // ---- Boulder / Pet blocking (before corridor, so pet swap gets priority) ----
+      if (NH.handleBoulderPet && NH.handleBoulderPet(navCtx)) return true;
+
+      // ---- Level exploration (no stairs visible) ----
+      if (NH.handleLevelExplore && NH.handleLevelExplore(navCtx)) return true;
 
       // ---- Corridor navigation ----
       if (NH.handleCorridor && NH.handleCorridor(navCtx)) return true;
 
+      // ---- Teleport fallback (before wall search, so it can interrupt) ----
+      if (NH.handleTeleport && NH.handleTeleport(navCtx)) return true;
+
       // ---- Wall search / perimeter walking ----
       if (NH.handleWallSearch && NH.handleWallSearch(navCtx)) return true;
+
+      // ---- Hard stuck timeout teleport ----
+      if (navCtx.stuckCount > 500 && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+        console.log(`[NAV] Hard stuck timeout at tick=${navCtx.tickCount} stuck=${navCtx.stuckCount}, teleporting`);
+        if (tryTeleport()) return true;
+      }
 
       // ---- Explore: unexplored boundary + fallback random walk ----
       if (NH.handleExplore && NH.handleExplore(navCtx)) return true;

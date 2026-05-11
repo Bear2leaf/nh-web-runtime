@@ -21,8 +21,9 @@
     const hungerText = env.getHunger();
     const hungerTrimmed = (hungerText || '').trim();
 
-    // ---- Fainted: unconscious, can't act. Just advance time until recovery ----
-    if (hungerTrimmed === 'Fainted') {
+    // ---- Fainted or Fainting: unconscious or about to faint, can't act.
+    // Just advance time until recovery ----
+    if (hungerTrimmed === 'Fainted' || hungerTrimmed === 'Fainting') {
       env.sendKey('.'.charCodeAt(0));
       return true;
     }

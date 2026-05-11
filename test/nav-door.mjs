@@ -3,6 +3,7 @@
  *
  * Navigates to visible doors, opens adjacent doors, kicks locked doors.
  * Skips doors in triedDoors set. Respects legInjured flag.
+ * Kicks locked doors multiple times before giving up.
  * Depends on window.NHNav (from nav-core.mjs).
  *
  * IIFE + ESM dual export pattern.
@@ -15,6 +16,9 @@
 
   const { W, H, DIRS, KEY, bfs } = NH;
 
+  const MAX_KICK_ATTEMPTS = 5;
+  const MAX_OPEN_ATTEMPTS = 3;
+
   /**
    * Navigate to and open doors. Kick locked doors (unless leg is injured).
    * Returns true if this handler consumed the tick.
@@ -22,17 +26,26 @@
   function handleDoors(navCtx) {
     const { env, player, grid, features, triedDoors, legInjured } = navCtx;
 
-    const untriedDoors = features.doors.filter(d => !triedDoors.has(d.x + ',' + d.y));
+    if (!navCtx.kickAttempts) navCtx.kickAttempts = new Map();
+
+    const untriedDoors = features.doors.filter(d => {
+      const key = d.x + ',' + d.y;
+      if (triedDoors.has(key)) return false;
+      // Also skip doors where we've exhausted kick attempts
+      const kicks = navCtx.kickAttempts.get(key) || 0;
+      if (kicks >= MAX_KICK_ATTEMPTS) return false;
+      return true;
+    });
     if (untriedDoors.length === 0) return false;
 
     let bestDoor = null, bestNext = null, bestDist = Infinity;
 
     for (const door of untriedDoors) {
       const ddx = door.x - player.x, ddy = door.y - player.y;
+      const doorKey = door.x + ',' + door.y;
 
       // Adjacent door — try to open it
       if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {
-        const doorKey = door.x + ',' + door.y;
         if (navCtx.lastDoorPos === doorKey) {
           navCtx.doorOpenAttempts++;
         } else {
@@ -40,20 +53,29 @@
           navCtx.doorOpenAttempts = 1;
         }
 
-        // Locked after multiple open attempts
-        if (navCtx.doorOpenAttempts > 2) {
-          triedDoors.add(doorKey);
-          navCtx.doorOpenAttempts = 0;
-          navCtx.lastDoorPos = null;
-          if (legInjured) {
-            console.log(`[NAV] Door at ${doorKey} is locked, leg injured — giving up`);
-            // Fall through to try other navigation
-          } else {
-            console.log(`[NAV] Door at ${doorKey} seems locked, kicking`);
-            env.sendKey(4); // ^D = kick
-            navCtx.pendingKickDir = DIRS.findIndex(([dx,dy]) => dx===ddx && dy===ddy);
-            return true;
+        // Locked after multiple open attempts — try kicking
+        if (navCtx.doorOpenAttempts > MAX_OPEN_ATTEMPTS) {
+          const kickCount = navCtx.kickAttempts.get(doorKey) || 0;
+          if (kickCount >= MAX_KICK_ATTEMPTS) {
+            // Exhausted all kick attempts — mark as tried
+            triedDoors.add(doorKey);
+            navCtx.doorOpenAttempts = 0;
+            navCtx.lastDoorPos = null;
+            console.log(`[NAV] Door at ${doorKey} still locked after ${MAX_KICK_ATTEMPTS} kicks, giving up`);
+            continue;
           }
+          if (legInjured) {
+            triedDoors.add(doorKey);
+            navCtx.doorOpenAttempts = 0;
+            navCtx.lastDoorPos = null;
+            console.log(`[NAV] Door at ${doorKey} is locked, leg injured — giving up`);
+            continue;
+          }
+          navCtx.kickAttempts.set(doorKey, kickCount + 1);
+          console.log(`[NAV] Kicking door at ${doorKey} (attempt ${kickCount + 1}/${MAX_KICK_ATTEMPTS})`);
+          env.sendKey(4); // ^D = kick
+          navCtx.pendingKickDir = DIRS.findIndex(([dx,dy]) => dx===ddx && dy===ddy);
+          return true;
         }
 
         env.sendKey('o'.charCodeAt(0));

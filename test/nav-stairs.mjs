@@ -20,7 +20,7 @@
    * Returns true if this handler consumed the tick.
    */
   function handleStairs(navCtx) {
-    const { env, player, grid, stairs, features } = navCtx;
+    const { env, player, grid, stairs, features, triedDoors } = navCtx;
 
     if (stairs) {
       navCtx.lastStairsPos = { x: stairs.x, y: stairs.y };
@@ -48,13 +48,23 @@
           ddx===(next.x-player.x) && ddy===(next.y-player.y));
         if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
       } else {
-        // BFS failed — try to open doors that might be blocking the path
+        // BFS failed — the path is blocked. Find and mark blocking doors as tried
+        // so the level search knows to try other approaches (wall search, etc.)
         const dx = stairs.x - player.x, dy = stairs.y - player.y;
         const blockingDoors = features.doors.filter(d => {
+          // Only consider doors roughly in the direction of stairs
           const doorDx = d.x - player.x, doorDy = d.y - player.y;
           return (Math.sign(doorDx) === Math.sign(dx) || doorDx === 0) &&
                  (Math.sign(doorDy) === Math.sign(dy) || doorDy === 0);
         });
+        for (const door of blockingDoors) {
+          const doorKey = door.x + ',' + door.y;
+          if (!triedDoors.has(doorKey)) {
+            console.log(`[NAV] BFS to stairs blocked by door at ${doorKey}, marking as tried`);
+            triedDoors.add(doorKey);
+          }
+        }
+        // Also try to open doors that might be blocking the path
         if (blockingDoors.length > 0) {
           let bestDoor = null, bestDist = Infinity;
           for (const door of blockingDoors) {
@@ -80,8 +90,19 @@
     // Stairs may have been visible before but not now (monster on top?)
     const { lastStairsPos } = navCtx;
     if (lastStairsPos && player.x === lastStairsPos.x && player.y === lastStairsPos.y) {
-      env.sendKey(62);
-      return true;
+      // Only descend if stairs are actually present on the grid
+      // Note: when player is on stairs, grid shows '@' not '<' or '>'
+      const tileCh = (grid[player.y]||'')[player.x] || ' ';
+      if (tileCh === '>' || (tileCh === '@' && lastStairsPos.stairsType !== '<')) {
+        env.sendKey(62);
+        return true;
+      }
+      // Standing on up-stairs ('<') — don't try to descend
+      if (tileCh === '<') {
+        navCtx.lastStairsPos = null;
+      }
+      // Stairs not actually here anymore — clear stale reference
+      navCtx.lastStairsPos = null;
     }
 
     return false;

@@ -101,8 +101,10 @@
     const { env, player, grid, features, stairs, corridorFailCount,
             lastSentDir, forcedDirChange, isAdjacentToWall } = navCtx;
 
-    const noRoomExit = !stairs && features.doors.length === 0;
-    if (corridorFailCount !== 0 && !noRoomExit) return false;
+    // Always try to exit to corridor when in room with no stairs — retry even after failures
+    // The guard clause `if (corridorFailCount !== 0 && !noRoomExit) return false` was removed
+    // because it caused the AI to get stuck oscillating in rooms when corridor navigation had
+    // previously failed but the room had a door. The AI should always try to exit.
 
     // Find floor tiles adjacent to corridors (room exits)
     let nearestRoomEntrance = null, roomEntranceDist = Infinity;
@@ -133,8 +135,13 @@
     if (nearestRoomEntrance) {
       const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid);
       if (next) {
-        navCtx.enclosedTick = 0;
-        navCtx.corridorFailCount = 0;
+        // Only reset failure counters when making genuine progress — not when oscillating
+        // between room and corridor. If corridorFailCount is already elevated, preserve it
+        // so that wall search / enclosed detection can trigger.
+        if (navCtx.corridorFailCount < 2) {
+          navCtx.enclosedTick = 0;
+          navCtx.corridorFailCount = 0;
+        }
         let idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
         if (forcedDirChange && idx === lastSentDir) {
           const alt = shuffleDirs().find(di => {
@@ -169,8 +176,10 @@
     if (bestCorridor) {
       const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid);
       if (next) {
-        navCtx.enclosedTick = 0;
-        navCtx.corridorFailCount = 0;
+        if (navCtx.corridorFailCount < 2) {
+          navCtx.enclosedTick = 0;
+          navCtx.corridorFailCount = 0;
+        }
         const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
         if (idx >= 0) {
           navCtx.lastMoveDir = idx;
@@ -248,7 +257,9 @@
         }
       }
 
-      // Option 2: retreat to nearest room
+      // Option 2: retreat to nearest room (but NOT if we've already retreated too many times)
+      const corridorFailCount = navCtx.corridorFailCount || 0;
+      if (corridorFailCount < 5) {
       let nearestRoom = null, roomDist = Infinity;
       for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
@@ -270,11 +281,51 @@
               corridorVisitCounts.clear();
               navCtx.corridorOscillationTick = 0;
               navCtx.corridorFailCount++;
-              navCtx.enclosedTick = navCtx.corridorFailCount >= 2 ? 200 : 150;
+              // Don't trigger wall search immediately — give normal navigation a chance
+              navCtx.enclosedTick = navCtx.corridorFailCount >= 3 ? 200 : 50;
               navCtx.lastMoveDir = idx;
               env.sendKey(KEY[idx].charCodeAt(0));
               return true;
             }
+          }
+        }
+      }
+      } // end corridorFailCount < 5 guard
+
+      // When retreats are exhausted (corridorFailCount >= 5), try to force forward
+      // through the corridor instead of going back to the same room
+      if (corridorFailCount >= 5) {
+        console.log(`[NAV] Corridor retreats exhausted (${corridorFailCount}), forcing forward`);
+        corridorVisitCounts.clear();
+        navCtx.corridorOscillationTick = 0;
+        // Pick the least-visited direction
+        const shuffled = shuffleDirs();
+        for (const di of shuffled) {
+          const [dx, dy] = DIRS[di];
+          const nx = player.x + dx, ny = player.y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (grid[ny]||'')[nx] || ' ';
+          if (isWalkable(ch) && !PET_CHARS.has(ch) && !MONSTERS.has(ch)) {
+            // Prefer directions not recently visited
+            const nKey = nx + ',' + ny;
+            const nVisits = corridorVisitCounts.get(nKey) || 0;
+            if (nVisits < 3) {
+              navCtx.lastMoveDir = di;
+              env.sendKey(KEY[di].charCodeAt(0));
+              return true;
+            }
+          }
+        }
+        // All directions visited too much — try any walkable direction
+        for (const di of shuffled) {
+          const [dx, dy] = DIRS[di];
+          const nx = player.x + dx, ny = player.y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (grid[ny]||'')[nx] || ' ';
+          if (isWalkable(ch)) {
+            navCtx.lastMoveDir = di;
+            env.sendKey(KEY[di].charCodeAt(0));
+            return true;
           }
         }
       }

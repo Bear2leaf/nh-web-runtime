@@ -20,35 +20,22 @@
    * Returns true if this handler consumed the tick.
    */
   function handleStuck(navCtx) {
-    const { env, player, lastPlayerPos, stuckCount, wallSearchPhase,
-            tickCount, lastSentDir, lastMoveDir } = navCtx;
+    const { env, tickCount, stuckCount, wallSearchPhase,
+            lastSentDir, lastMoveDir } = navCtx;
 
-    const moved = !lastPlayerPos || player.x !== lastPlayerPos.x || player.y !== lastPlayerPos.y;
-
-    // Update stuck count
-    if (moved) {
-      navCtx.stuckCount = 0;
-      navCtx.doorAttemptCount = 0;
-    } else if (!wallSearchPhase) {
-      navCtx.stuckCount++;
-    }
-    navCtx.lastPlayerPos = { x: player.x, y: player.y };
-
-    if (navCtx.stuckCount > 1500) {
-      navCtx.stopped = true;
-      if (navCtx.onDone) navCtx.onDone('stuck');
-      return true;
-    }
-
-    // ---- Stuck recovery: same direction failing, or hidden prompt blocking ----
-    if (stuckCount > 20 && (stuckCount % 20 === 0)) {
+    // When wall search is active, don't intercept — let wall search handle navigation.
+    // Only send ESC if wall search has been stuck for extremely long (>500).
+    if (wallSearchPhase && stuckCount < 500) {
+      // Don't consume the tick; let wall search handler deal with it
+      // But still track forced direction changes below
+    } else if (stuckCount > 20 && (stuckCount % 20 === 0)) {
       console.log(`[NAV] Stuck recovery: sending ESC at tick=${tickCount} stuck=${stuckCount}`);
       env.sendKey(27);
       return true;
     }
 
     const isInCorridor = navCtx.isInCorridor;
-    if (stuckCount > 40 && !isInCorridor) {
+    if (stuckCount > 40 && !isInCorridor && stuckCount % 20 === 0) {
       console.log(`[NAV] Stuck in room, searching for hidden doors at tick=${tickCount}`);
       navCtx.lastSearchTick = tickCount;
       env.sendKey('s'.charCodeAt(0));

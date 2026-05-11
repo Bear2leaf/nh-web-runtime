@@ -15,12 +15,16 @@ import './nav-core.mjs';
 import './nav-modal.mjs';
 import './nav-hp-hunger.mjs';
 import './nav-combat.mjs';
+import './nav-food.mjs';
 import './nav-stuck.mjs';
 import './nav-stairs.mjs';
 import './nav-door.mjs';
 import './nav-corridor.mjs';
 import './nav-wall-search.mjs';
 import './nav-explore.mjs';
+import './nav-boulder-pet.mjs';
+import './nav-level-explore.mjs';
+import './nav-teleport.mjs';
 import { startNavigation } from './nav-ai.mjs';
 
 import { createRequire } from 'module';

@@ -22,10 +22,24 @@
    */
   function handleWallSearch(navCtx) {
     const { env, player, grid, features, stairs, tickCount, isInCorridor,
-            hasVisibleCorridors, recentPositions, searchCooldownTick,
-            wallSearchPhase, stuckCount, teleportAttempts, isAdjacentToWall } = navCtx;
+            recentPositions, wallSearchPhase, stuckCount, teleportAttempts,
+            isAdjacentToWall } = navCtx;
 
-    // ---- Oscillation detection (independent of enclosure) ----
+    // NOTE: enclosedTick accumulation and wall search triggering are now done in
+    // updateMapAndState() in nav-ai.mjs (before handlers run). This ensures the
+    // logic always executes even when higher-priority handlers would consume the tick.
+
+    // If player is starving or weak, bail out of wall search to let food handler run
+    if (navCtx.wallSearchPhase) {
+      const hungerText = (env.getHunger() || '').trim();
+      if (hungerText === 'Weak' || hungerText === 'Fainting') {
+        navCtx.wallSearchPhase = false;
+        console.log('[NAV] Exiting wall search — hunger critical, letting food handler run');
+        return false;
+      }
+    }
+
+    // ---- Oscillation detection (for wall path updates) ----
     let isOscillating = false;
     if (recentPositions.length >= 8) {
       const posSet = new Set();
@@ -33,51 +47,31 @@
       if (posSet.size <= 4) isOscillating = true;
     }
 
-    // ---- Enclosed room detection ----
-    const isSurroundedByCorridors = (() => {
-      let corridorCount = 0, wallCount = 0;
-      for (const [dx, dy] of DIRS) {
-        const nx = player.x + dx, ny = player.y + dy;
-        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-        const ch = (grid[ny]||'')[nx] || ' ';
-        if (ch === '#') corridorCount++;
-        if (ch === '|' || ch === '-') wallCount++;
-      }
-      return corridorCount > 0 && wallCount === 0;
-    })();
-    const recentSearchCooldown = searchCooldownTick > 0 && tickCount - searchCooldownTick <= 10;
-    const noStairsOrDoors = !stairs && features.doors.length === 0;
-    const levelSearchTimeout = tickCount > 800 && noStairsOrDoors;
-    const isEnclosed = noStairsOrDoors && !isSurroundedByCorridors &&
-                       !recentSearchCooldown && !isInCorridor;
-
-    // Update enclosedTick
-    if (isEnclosed) {
-      navCtx.enclosedTick++;
-    } else if (isOscillating && !isInCorridor && !isSurroundedByCorridors) {
-      navCtx.enclosedTick += 0.5;
-    } else if (!wallSearchPhase) {
+    // If in wall search but now in a corridor, exit wall search
+    if (navCtx.wallSearchPhase && isInCorridor) {
+      navCtx.wallSearchPhase = false;
+      navCtx.wallFollowPath = [];
       navCtx.enclosedTick = 0;
+      console.log('[NAV] Exiting wall search — entered corridor');
+      return false;
     }
 
-    // Trigger wall search
-    if (((isEnclosed && navCtx.enclosedTick > 100) ||
-         (isOscillating && !isInCorridor) || levelSearchTimeout) && !isInCorridor) {
-      if (!wallSearchPhase) {
-        navCtx.wallFollowPath = buildWallFollowPath(player.x, player.y, grid);
-        navCtx.wallFollowIdx = 0;
-        navCtx.wallSearchPhase = true;
-        navCtx.wallFollowPasses = 0;
-        navCtx.wallFollowTargetRetries = 0;
-        navCtx.wallSearchStep = 0;
-        console.log(`[NAV] Wall search started (enclosed=${isEnclosed} oscillating=${isOscillating}): ${navCtx.wallFollowPath.length} perimeter positions`);
-      } else if (isOscillating && !isInCorridor) {
-        const newPath = buildWallFollowPath(player.x, player.y, grid);
-        if (newPath.length !== navCtx.wallFollowPath.length) {
-          navCtx.wallFollowPath = newPath;
-          if (navCtx.wallFollowIdx >= newPath.length) navCtx.wallFollowIdx = 0;
-          console.log(`[NAV] Wall path updated during oscillation: ${newPath.length} positions`);
-        }
+    // If in wall search but stairs became visible, exit wall search
+    if (navCtx.wallSearchPhase && stairs) {
+      navCtx.wallSearchPhase = false;
+      navCtx.wallFollowPath = [];
+      navCtx.enclosedTick = 0;
+      console.log('[NAV] Exiting wall search — stairs found');
+      return false;
+    }
+
+    // Update wall path during oscillation only when already in wall search
+    if (navCtx.wallSearchPhase && isOscillating && !isInCorridor) {
+      const newPath = buildWallFollowPath(player.x, player.y, grid);
+      if (newPath.length !== navCtx.wallFollowPath.length) {
+        navCtx.wallFollowPath = newPath;
+        if (navCtx.wallFollowIdx >= newPath.length) navCtx.wallFollowIdx = 0;
+        console.log(`[NAV] Wall path updated during oscillation: ${newPath.length} positions`);
       }
     }
 
@@ -121,7 +115,10 @@
     while (head < queue.length) {
       const cur = queue[head++];
       const curCh = (grid[cur.y]||'')[cur.x] || ' ';
-      if (curCh !== '#' && isAdjacentToWall(cur.x, cur.y, grid)) {
+      // Only include walkable tiles (not walls themselves)
+      if (curCh !== '#' && isBfsWalkable(curCh) &&
+          curCh !== '|' && curCh !== '-' &&
+          isAdjacentToWall(cur.x, cur.y, grid)) {
         wallAdj.push(cur);
       }
       for (const [dx, dy] of DIRS) {
@@ -249,6 +246,7 @@
           if (PET_CHARS.has(nextCh)) {
             navCtx.wallFollowTargetRetries++;
             if (navCtx.wallFollowTargetRetries > 3) {
+              navCtx.searchedWallPos.add(target.x + ',' + target.y);
               navCtx.wallFollowIdx++;
               navCtx.wallFollowTargetRetries = 0;
               return true;
@@ -287,6 +285,7 @@
           if (nextCh === '+') {
             const doorKey = next.x + ',' + next.y;
             if (navCtx.triedDoors.has(doorKey)) {
+              navCtx.searchedWallPos.add(target.x + ',' + target.y);
               navCtx.wallFollowIdx++;
               navCtx.wallFollowTargetRetries = 0;
               return true;
@@ -302,17 +301,22 @@
           if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
         }
 
-        // BFS failed — search current position if wall-adjacent
-        if (isAdjacentToWall(player.x, player.y, grid)) {
-          const tKey = player.x + ',' + player.y;
-          if (!navCtx.searchedWallPos.has(tKey)) {
-            navCtx.searchedWallPos.add(tKey);
-            navCtx.lastSearchTick = tickCount;
-            env.sendKey('s'.charCodeAt(0));
+        // BFS failed — mark target as unreachable and move on
+        navCtx.searchedWallPos.add(target.x + ',' + target.y);
+        navCtx.wallFollowIdx++;
+        navCtx.wallFollowTargetRetries = 0;
+
+        // If stuck for many ticks without making progress, try teleport
+        if (navCtx.stuckCount > 40 && navCtx.teleportAttempts < 3) {
+          if (tryTeleport(navCtx)) {
+            navCtx.wallSearchPhase = false;
+            navCtx.wallFollowPath = [];
+            navCtx.wallFollowIdx = 0;
+            navCtx.wallFollowPasses = 0;
+            navCtx.searchedWallPos.clear();
             return true;
           }
         }
-        navCtx.wallFollowIdx++;
       }
     }
 

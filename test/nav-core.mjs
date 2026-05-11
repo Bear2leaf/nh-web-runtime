@@ -17,12 +17,14 @@
   function isWalkable(ch) {
     if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) return false;
     if (ch === '|' || ch === '-' || ch === ' ' || ch === '`') return false;
+    if (ch === '^') return false; // known traps
     return true;
   }
 
   function isBfsWalkable(ch) {
     if (ch === '|' || ch === '-' || ch === ' ') return false;
     if (ch === '#') return true; // corridors are walkable
+    if (ch === '^') return false; // known traps
     return true;
   }
 
@@ -33,6 +35,7 @@
       for (let x = 0; x < W; x++) {
         const ch = (grid[y] || '')[x] || ' ';
         if (ch === '@') player = { x, y };
+        // Only target down-stairs ('>') — AI descends levels
         if (ch === '>') stairs = { x, y };
         if (ch === '%') {
           if (player) {
