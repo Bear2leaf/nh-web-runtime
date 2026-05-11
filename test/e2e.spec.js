@@ -126,8 +126,21 @@ test.describe('NetHack Web Runtime', () => {
       // Expose a global result that the test can poll
       await page.evaluate(() => { window.__navResult = null; });
 
-      // Inject nav modules in dependency order: core -> strategy -> ai -> browser-env
-      for (const filename of ['nav-core.mjs', 'nav-strategy.mjs', 'nav-ai.mjs', 'nav-browser-env.mjs']) {
+      // Inject nav modules in dependency order: core -> handlers -> ai -> browser-env
+      for (const filename of [
+        'nav-core.mjs',
+        'nav-modal.mjs',
+        'nav-hp-hunger.mjs',
+        'nav-combat.mjs',
+        'nav-stuck.mjs',
+        'nav-stairs.mjs',
+        'nav-door.mjs',
+        'nav-corridor.mjs',
+        'nav-wall-search.mjs',
+        'nav-explore.mjs',
+        'nav-ai.mjs',
+        'nav-browser-env.mjs',
+      ]) {
         const modulePath = path.join(__dirname, filename);
         const code = fs.readFileSync(modulePath, 'utf-8')
           .replace(/^export\b[\s\S]*$/m, ''); // Strip ES module exports (multiline-safe)

@@ -1,5 +1,8 @@
 # NetHack Navigation AI — Progress Report (2026/05/11)
 
+## 参考
+./NetHack为当前游戏底层引擎，在识别到无法正常处理的逻辑时，可以参考源码进行理解并实现解决方案
+
 ## 目标
 让AI从Dlvl:1成功下到Dlvl:2。
 
