@@ -515,11 +515,12 @@ export async function nethackShimCallback(name, ...args) {
         // Auto-resolve: pick/select -> y, "Really step" -> y (walk onto traps),
         // eat prompt -> 'a' (eat from floor), other -> default
         let autoChar;
-        if (query.toLowerCase().includes('pick') || query.toLowerCase().includes('select')) {
+        if (query.toLowerCase().includes('pick') || query.toLowerCase().includes('select') || query.toLowerCase().includes('swap places')) {
             autoChar = 'y'.charCodeAt(0);
         } else if (query.includes('Really step')) {
             autoChar = 'y'.charCodeAt(0); // Walk onto traps rather than get stuck
         } else if (query.toLowerCase().includes('what do you want to eat')) {
+            log('yn_function: eat prompt detected, query=', query);
             // Parse valid food choices from the prompt, e.g. [fg or ?*] means f or g are food items
             let foodChar = defaultChar;
             const choiceMatch = query.match(/\[([^\]]+)\]/);
@@ -534,6 +535,8 @@ export async function nethackShimCallback(name, ...args) {
         } else {
             autoChar = defaultChar;
         }
+        // Guard: if auto-resolved char is invalid (def=0 returns NUL), fall back to 'n'
+        if (!autoChar || autoChar < 32) autoChar = 'n'.charCodeAt(0);
         log('yn_function: auto-resolving with', String.fromCharCode(autoChar));
         return Promise.resolve(autoChar);
     }
