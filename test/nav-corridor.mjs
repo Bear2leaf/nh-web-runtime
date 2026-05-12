@@ -193,8 +193,21 @@
       navCtx.lastOscHandlerTick = tickCount;
       console.log(`[NAV] Corridor oscillation detected: revisits=${revisits} oscTick=${corridorOscillationTick} stuck=${stuckCount} hadPet=${hadPetBlock}`);
 
-      // Pet blocking — try to swap places
+      // Pet blocking — try to swap places, but give up after too many swaps
       if (hadPetBlock) {
+        // Track consecutive pet swap attempts
+        if (!navCtx.petSwapConsecutive) navCtx.petSwapConsecutive = 0;
+        navCtx.petSwapConsecutive++;
+
+        // Too many consecutive swaps — give up and let other handlers run
+        if (navCtx.petSwapConsecutive > 4) {
+          console.log(`[NAV] Too many pet swaps (${navCtx.petSwapConsecutive}), giving up on corridor handling`);
+          navCtx.petSwapConsecutive = 0;
+          corridorVisitCounts.clear();
+          navCtx.corridorOscillationTick = 0;
+          return false;
+        }
+
         let nearestPet = null, nearestPetDist = Infinity;
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
@@ -211,12 +224,15 @@
           const pdx = nearestPet.x - player.x, pdy = nearestPet.y - player.y;
           const pidx = DIRS.findIndex(([dx,dy]) => dx===pdx && dy===pdy);
           if (pidx >= 0) {
-            console.log(`[NAV] Pet blocking at ${nearestPet.x},${nearestPet.y}, swapping places (dir=${pidx})`);
+            console.log(`[NAV] Pet blocking at ${nearestPet.x},${nearestPet.y}, swapping places (dir=${pidx}, attempt=${navCtx.petSwapConsecutive})`);
             env.sendKey(KEY[pidx].charCodeAt(0));
             return true;
           }
         }
       }
+
+      // No pet block or pet swap failed — reset counter
+      navCtx.petSwapConsecutive = 0;
 
       // Option 1: teleport
       if (teleportAttempts < MAX_TELEPORT_ATTEMPTS &&
