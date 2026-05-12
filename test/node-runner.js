@@ -12,6 +12,8 @@ import { NHNodeEnv } from './nav-env-node.js';
 
 // Import nav modules in dependency order (IIFEs set globalThis.NHNav)
 import './nav-core.mjs';
+import './nav-helpers.mjs';
+import './nav-state-update.mjs';
 import './nav-modal.mjs';
 import './nav-hp-hunger.mjs';
 import './nav-combat.mjs';

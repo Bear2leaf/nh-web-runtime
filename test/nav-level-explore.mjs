@@ -19,7 +19,7 @@
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-level-explore.js'); return; }
 
   const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable,
-          bfs, scanMap } = NH;
+          bfs, bfsAvoiding, scanMap } = NH;
 
   /**
    * Systematic level exploration when no stairs visible.
@@ -30,7 +30,8 @@
    */
   function handleLevelExplore(navCtx) {
     const { env, player, grid, stairs, features, isInCorridor,
-            stuckCount, tickCount, recentPositions } = navCtx;
+            stuckCount, tickCount, recentPositions, knownTrapPositions } = navCtx;
+    const blocked = knownTrapPositions || new Set();
 
     // Only active when no stairs are visible
     if (stairs) return false;
@@ -56,7 +57,7 @@
     if (boundary) {
       const bch = (grid[boundary.y]||'')[boundary.x] || ' ';
       if (isWalkable(bch) && !MONSTERS.has(bch)) {
-        const next = bfs(player.x, player.y, boundary.x, boundary.y, grid);
+        const next = bfsAvoiding(player.x, player.y, boundary.x, boundary.y, grid, blocked);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           if (nch === '`') {
@@ -121,7 +122,7 @@
         }
       }
       if (bestCorridor) {
-        const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid);
+        const next = bfsAvoiding(player.x, player.y, bestCorridor.x, bestCorridor.y, grid, blocked);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           if (!PET_CHARS.has(nch)) {
@@ -179,7 +180,7 @@
         }
       }
       if (bestJunction) {
-        const next = bfs(player.x, player.y, bestJunction.x, bestJunction.y, grid);
+        const next = bfsAvoiding(player.x, player.y, bestJunction.x, bestJunction.y, grid, blocked);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           if (!PET_CHARS.has(nch)) {

@@ -14,7 +14,8 @@
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-wall-search.js'); return; }
 
   const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable,
-          bfs, scanMap, findOnMap, shuffleDirs } = NH;
+          bfs, scanMap, findOnMap, shuffleDirs, tryTeleport, buildWallFollowPath,
+          isAdjacentToWall, findNearestUnsearchedWall } = NH;
 
   /**
    * Main handler: enclosed detection, wall search triggering, and execution.
@@ -91,74 +92,6 @@
     // ---- Wall search execution ----
     if (!navCtx.wallSearchPhase) return false;
     return executeWallSearch(navCtx);
-  }
-
-  // ---- Teleport helper ----
-  function tryTeleport(navCtx) {
-    const { teleportAttempts, teleportFailed, env } = navCtx;
-    if (teleportAttempts >= 3) return false;
-    if (teleportFailed) return false;
-    navCtx.teleportAttempts++;
-    console.log(`[NAV] Attempting teleport (${navCtx.teleportAttempts}/3)`);
-    env.sendKey(20);
-    return true;
-  }
-
-  // ---- Wall follow path builder ----
-  function buildWallFollowPath(px, py, grid) {
-    const visited = Array.from({length: H}, () => new Uint8Array(W));
-    const queue = [{x: px, y: py}];
-    visited[py][px] = 1;
-    let head = 0;
-    const wallAdj = [];
-
-    while (head < queue.length) {
-      const cur = queue[head++];
-      const curCh = (grid[cur.y]||'')[cur.x] || ' ';
-      // Only include walkable tiles (not walls themselves)
-      if (curCh !== '#' && isBfsWalkable(curCh) &&
-          curCh !== '|' && curCh !== '-' &&
-          isAdjacentToWall(cur.x, cur.y, grid)) {
-        wallAdj.push(cur);
-      }
-      for (const [dx, dy] of DIRS) {
-        const nx = cur.x + dx, ny = cur.y + dy;
-        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-        if (visited[ny][nx]) continue;
-        const ch = (grid[ny]||'')[nx] || ' ';
-        if (!isBfsWalkable(ch)) continue;
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) continue;
-        visited[ny][nx] = 1;
-        queue.push({x: nx, y: ny});
-      }
-    }
-
-    if (wallAdj.length === 0) return [];
-
-    wallAdj.sort((a, b) => {
-      if (a.y !== b.y) return a.y - b.y;
-      return a.x - b.x;
-    });
-
-    if (wallAdj.length > 60) {
-      const sampled = [];
-      const step = Math.floor(wallAdj.length / 60);
-      for (let i = 0; i < wallAdj.length; i += step) sampled.push(wallAdj[i]);
-      return sampled;
-    }
-    return wallAdj;
-  }
-
-  // ---- Wall-adjacent check ----
-  function isAdjacentToWall(px, py, grid) {
-    for (let di = 0; di < 8; di++) {
-      const [dx, dy] = DIRS[di];
-      const nx = px + dx, ny = py + dy;
-      if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-      const ch = (grid[ny]||'')[nx] || ' ';
-      if (ch === '|' || ch === '-' || ch === '+' || ch === '#') return true;
-    }
-    return false;
   }
 
   // ---- Wall search execution ----
@@ -384,52 +317,8 @@
     return false;
   }
 
-  // ---- Find nearest unsearched wall position ----
-  function findNearestUnsearchedWall(px, py, grid, searchedWallPos) {
-    const visited = Array.from({length: H}, () => new Uint8Array(W));
-    const parent = Array.from({length: H}, () => new Array(W).fill(null));
-    const queue = [{x: px, y: py}];
-    visited[py][px] = 1;
-    let head = 0;
-
-    while (head < queue.length) {
-      const cur = queue[head++];
-      const curCh = (grid[cur.y]||'')[cur.x] || ' ';
-      if (curCh !== '#' && isAdjacentToWall(cur.x, cur.y, grid)) {
-        const key = cur.x + ',' + cur.y;
-        if (!searchedWallPos.has(key)) {
-          if (cur.x === px && cur.y === py) return cur;
-          let step = cur;
-          while (parent[step.y][step.x] &&
-                 !(parent[step.y][step.x].x === px && parent[step.y][step.x].y === py)) {
-            step = parent[step.y][step.x];
-          }
-          return step;
-        }
-      }
-      for (const [dx, dy] of DIRS) {
-        const nx = cur.x + dx, ny = cur.y + dy;
-        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-        if (visited[ny][nx]) continue;
-        const ch = (grid[ny]||'')[nx] || ' ';
-        if (!isBfsWalkable(ch)) continue;
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) continue;
-        visited[ny][nx] = 1;
-        parent[ny][nx] = cur;
-        queue.push({x: nx, y: ny});
-      }
-    }
-
-    // All searched — reset
-    if (searchedWallPos.size > 0) {
-      searchedWallPos.clear();
-      return null;
-    }
-    return null;
-  }
-
   global.NHNav = global.NHNav || {};
   Object.assign(global.NHNav, { handleWallSearch });
 })(typeof globalThis !== 'undefined' ? globalThis : window);
 
-export const { handleWallSearch } = global.NHNav || {};
+export const { handleWallSearch } = globalThis.NHNav || {};

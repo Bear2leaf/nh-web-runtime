@@ -20,7 +20,8 @@
    * Always returns true (last resort handler).
    */
   function handleExplore(navCtx) {
-    const { env, player, grid } = navCtx;
+    const { env, player, grid, knownTrapPositions } = navCtx;
+    const blocked = knownTrapPositions || new Set();
 
     // ---- Unexplored boundary ----
     const boundary = NH.findNearestUnexplored(grid, player.x, player.y);
@@ -33,7 +34,7 @@
       }
     }
 
-    // ---- Random walkable direction ----
+    // ---- Random walkable direction (avoiding known traps) ----
     const shuffled = shuffleDirs();
     for (const di of shuffled) {
       const [ddx, ddy] = DIRS[di];
@@ -41,8 +42,8 @@
       if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
         const ch = (grid[ny]||'')[nx] || ' ';
         if (isWalkable(ch)) {
-          // Avoid swapping places with pets
           if (PET_CHARS.has(ch)) continue;
+          if (blocked.has(nx + ',' + ny)) continue;
           env.sendKey(KEY[di].charCodeAt(0));
           return true;
         }

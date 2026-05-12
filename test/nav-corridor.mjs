@@ -13,7 +13,8 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-corridor.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, bfs, shuffleDirs } = NH;
+  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, bfs, shuffleDirs,
+          isInDeadEnd, tryTeleport, MAX_TELEPORT_ATTEMPTS } = NH;
 
   /**
    * Handle corridor navigation: dead-end, room-to-corridor, following, oscillation.
@@ -51,8 +52,10 @@
       if (tryTeleport(navCtx)) return true;
     }
 
-    // ---- Room-to-corridor navigation (only when NOT in a corridor) ----
-    if (!wallSearchPhase && !isInCorridor) {
+    // ---- Room-to-corridor navigation (when NOT in a corridor) ----
+    // Allow even during wall search — if there's a visible corridor exit,
+    // prefer using it over searching walls.
+    if (!isInCorridor) {
       if (handleRoomToCorridor(navCtx)) return true;
     }
 
@@ -63,38 +66,6 @@
 
     return false;
   }
-
-  // ---- Dead end detection helper ----
-  function isInDeadEnd(px, py, grid) {
-    const ch = (grid[py]||'')[px] || ' ';
-    if (ch !== '#') return -1;
-    let walkableDirs = 0;
-    let exitDir = -1;
-    for (let di = 0; di < 8; di++) {
-      const [dx, dy] = DIRS[di];
-      const nx = px + dx, ny = py + dy;
-      if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-      const nch = (grid[ny]||'')[nx] || ' ';
-      if (isWalkable(nch) && !MONSTERS.has(nch)) {
-        walkableDirs++;
-        exitDir = di;
-      }
-    }
-    return walkableDirs <= 1 ? exitDir : -1;
-  }
-
-  // ---- Teleport helper ----
-  function tryTeleport(navCtx) {
-    const { teleportAttempts, teleportFailed, env } = navCtx;
-    if (teleportAttempts >= MAX_TELEPORT_ATTEMPTS) return false;
-    if (teleportFailed) return false;
-    navCtx.teleportAttempts++;
-    console.log(`[NAV] Attempting teleport (${navCtx.teleportAttempts}/${MAX_TELEPORT_ATTEMPTS})`);
-    env.sendKey(20); // ^T
-    return true;
-  }
-
-  const MAX_TELEPORT_ATTEMPTS = 3;
 
   // ---- Room-to-corridor navigation ----
   function handleRoomToCorridor(navCtx) {

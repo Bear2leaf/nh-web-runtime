@@ -56,11 +56,26 @@
 
   /**
    * Find nearest food tile from player position.
+   * Sticks to a previously chosen food target until reached or no longer on map.
    * Returns {x, y} or null.
    */
-  function findNearestFood(px, py, grid) {
+  function findNearestFood(navCtx, px, py, grid) {
     const features = scanMap(grid);
     if (features.food.length === 0) return null;
+
+    // Prefer the sticky food target if it's still reachable on the map
+    if (navCtx.foodTarget) {
+      const ft = navCtx.foodTarget;
+      const stillExists = features.food.some(f => f.x === ft.x && f.y === ft.y);
+      if (stillExists) {
+        const dist = Math.abs(ft.x - px) + Math.abs(ft.y - py);
+        // Only use sticky target if we haven't gotten further from it
+        if (dist <= (navCtx.foodTargetDist || Infinity) + 2) {
+          return ft;
+        }
+      }
+    }
+
     let best = null, bestDist = Infinity;
     for (const f of features.food) {
       const dist = Math.abs(f.x - px) + Math.abs(f.y - py);
@@ -89,8 +104,17 @@
       return true;
     }
 
-    const nearestFood = findNearestFood(player.x, player.y, grid);
+    const nearestFood = findNearestFood(navCtx, player.x, player.y, grid);
     const noFood = msgs.some(m => m.includes("don't have anything to eat"));
+
+    // Track sticky food target
+    if (nearestFood) {
+      navCtx.foodTarget = nearestFood;
+      navCtx.foodTargetDist = Math.abs(nearestFood.x - player.x) + Math.abs(nearestFood.y - player.y);
+    } else {
+      navCtx.foodTarget = null;
+      navCtx.foodTargetDist = Infinity;
+    }
 
     // Always pick up food when standing on it or adjacent — don't wait until hungry
     if (nearestFood) {
@@ -103,20 +127,13 @@
         return true;
       }
 
-      // Adjacent to food — step onto it (only if not blocked by pet/trap)
+      // Adjacent to food — step onto it (attempt pet swap if pet is on food)
       if (foodDist === 1) {
         const dx = nearestFood.x - player.x;
         const dy = nearestFood.y - player.y;
         const idx = DIRS.findIndex(([ddx,ddy]) =>
           ddx===dx && ddy===dy);
         if (idx >= 0) {
-          // Check if target is a pet (pet blocks us from picking up adjacent food)
-          const nx = player.x + dx, ny = player.y + dy;
-          const nch = (grid[ny]||'')[nx] || ' ';
-          if (PET_CHARS.has(nch)) {
-            // Pet is on the food — don't override pet avoidance; let other handlers run
-            return false;
-          }
           navCtx.lastMoveDir = idx;
           env.sendKey(KEY[idx].charCodeAt(0));
           return true;

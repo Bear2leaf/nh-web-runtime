@@ -66,6 +66,43 @@
     return features;
   }
 
+  /**
+   * BFS pathfinding that avoids a set of blocked positions.
+   * blockedPositions: Set of "x,y" strings to treat as impassable.
+   * Returns first step {x,y} toward target, or null.
+   */
+  function bfsAvoiding(sx, sy, tx, ty, grid, blockedPositions) {
+    if (sx === tx && sy === ty) return null;
+    const visited = Array.from({length: H}, () => new Uint8Array(W));
+    const parent = Array.from({length: H}, () => new Array(W).fill(null));
+    const queue = [{x: sx, y: sy}];
+    visited[sy][sx] = 1;
+    let head = 0;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      if (cur.x === tx && cur.y === ty) {
+        let step = cur;
+        while (parent[step.y][step.x] && !(parent[step.y][step.x].x === sx && parent[step.y][step.x].y === sy)) {
+          step = parent[step.y][step.x];
+        }
+        return step;
+      }
+      for (const [dx, dy] of DIRS) {
+        const nx = cur.x + dx, ny = cur.y + dy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        if (visited[ny][nx]) continue;
+        const ch = (grid[ny]||'')[nx] || ' ';
+        if (!isBfsWalkable(ch)) continue;
+        if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
+        if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
+        visited[ny][nx] = 1;
+        parent[ny][nx] = cur;
+        queue.push({x: nx, y: ny});
+      }
+    }
+    return null;
+  }
+
   function bfs(sx, sy, tx, ty, grid) {
     if (sx === tx && sy === ty) return null;
     const visited = Array.from({length: H}, () => new Uint8Array(W));
@@ -183,7 +220,7 @@
   Object.assign(global.NHNav, {
     W, H, DIRS, KEY, MONSTERS, PET_CHARS,
     isWalkable, isBfsWalkable,
-    findOnMap, scanMap, bfs,
+    findOnMap, scanMap, bfs, bfsAvoiding,
     findNearestUnexplored, getRecentMessages,
     isSearchSpam, findNearestMonster, shuffleDirs,
   });
@@ -191,5 +228,5 @@
 
 // ES module exports (for Node)
 export const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable,
-                findOnMap, scanMap, bfs, findNearestUnexplored,
+                findOnMap, scanMap, bfs, bfsAvoiding, findNearestUnexplored,
                 getRecentMessages, isSearchSpam, findNearestMonster, shuffleDirs } = global.NHNav || {};
