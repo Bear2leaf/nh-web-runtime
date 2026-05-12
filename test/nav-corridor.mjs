@@ -113,7 +113,18 @@
           navCtx.enclosedTick = 0;
           navCtx.corridorFailCount = 0;
         }
+        const nextCh = (grid[next.y]||'')[next.x] || ' ';
         let idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
+        // If next BFS step is a closed door, open it instead of bumping
+        if (nextCh === '+' && idx >= 0) {
+          const doorKey = next.x + ',' + next.y;
+          if (!navCtx.triedDoors.has(doorKey)) {
+            console.log(`[NAV] Room-to-corridor: opening door at ${next.x},${next.y}`);
+            env.sendKey('o'.charCodeAt(0));
+            navCtx.pendingDir = idx;
+            return true;
+          }
+        }
         if (forcedDirChange && idx === lastSentDir) {
           const alt = shuffleDirs().find(di => {
             const [dx, dy] = DIRS[di];
@@ -151,7 +162,18 @@
           navCtx.enclosedTick = 0;
           navCtx.corridorFailCount = 0;
         }
+        const nextCh = (grid[next.y]||'')[next.x] || ' ';
         const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
+        // If next BFS step is a closed door, open it instead of bumping
+        if (nextCh === '+' && idx >= 0) {
+          const doorKey = next.x + ',' + next.y;
+          if (!navCtx.triedDoors.has(doorKey)) {
+            console.log(`[NAV] Room-to-corridor (fallback): opening door at ${next.x},${next.y}`);
+            env.sendKey('o'.charCodeAt(0));
+            navCtx.pendingDir = idx;
+            return true;
+          }
+        }
         if (idx >= 0) {
           navCtx.lastMoveDir = idx;
           env.sendKey(KEY[idx].charCodeAt(0));
@@ -280,30 +302,41 @@
       } // end corridorFailCount < 5 guard
 
       // When retreats are exhausted (corridorFailCount >= 5), try to force forward
-      // through the corridor instead of going back to the same room
+      // through the corridor instead of going back to the same room.
+      // Prefer corridor tiles (#) — room floor (.) has visit-count=0 which would
+      // cause the AI to always go back to the room it just left.
       if (corridorFailCount >= 5) {
         console.log(`[NAV] Corridor retreats exhausted (${corridorFailCount}), forcing forward`);
         corridorVisitCounts.clear();
         navCtx.corridorOscillationTick = 0;
-        // Pick the least-visited direction
         const shuffled = shuffleDirs();
+        // First: pick a corridor tile direction (preferred)
         for (const di of shuffled) {
           const [dx, dy] = DIRS[di];
           const nx = player.x + dx, ny = player.y + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (grid[ny]||'')[nx] || ' ';
-          if (isWalkable(ch) && !PET_CHARS.has(ch) && !MONSTERS.has(ch)) {
-            // Prefer directions not recently visited
-            const nKey = nx + ',' + ny;
-            const nVisits = corridorVisitCounts.get(nKey) || 0;
-            if (nVisits < 3) {
-              navCtx.lastMoveDir = di;
-              env.sendKey(KEY[di].charCodeAt(0));
-              return true;
-            }
+          if (ch === '#' && !PET_CHARS.has(ch) && !MONSTERS.has(ch)) {
+            navCtx.lastMoveDir = di;
+            env.sendKey(KEY[di].charCodeAt(0));
+            return true;
           }
         }
-        // All directions visited too much — try any walkable direction
+        // Second: pick any walkable non-room direction (no monsters/pets)
+        for (const di of shuffled) {
+          const [dx, dy] = DIRS[di];
+          const nx = player.x + dx, ny = player.y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (grid[ny]||'')[nx] || ' ';
+          // Room floor (.) leads back to room — skip unless nothing else is available
+          if (ch === '.' || ch === '<' || ch === '>') continue;
+          if (isWalkable(ch) && !PET_CHARS.has(ch) && !MONSTERS.has(ch)) {
+            navCtx.lastMoveDir = di;
+            env.sendKey(KEY[di].charCodeAt(0));
+            return true;
+          }
+        }
+        // Last resort: any walkable direction (including room floor)
         for (const di of shuffled) {
           const [dx, dy] = DIRS[di];
           const nx = player.x + dx, ny = player.y + dy;

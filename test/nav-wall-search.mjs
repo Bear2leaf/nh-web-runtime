@@ -57,6 +57,30 @@
       return false;
     }
 
+    // If in wall search but a corridor tile is within reach (3 steps), the AI has
+    // clearly found the level perimeter — let corridor/door handling take over.
+    // This prevents wall search from blocking forever when the BFS perimeter path
+    // goes through an unopened door.
+    if (navCtx.wallSearchPhase) {
+      let corridorNearby = false;
+      outer: for (let r = 1; r <= 3; r++) {
+        for (let di = 0; di < 4; di++) {
+          const [dx, dy] = DIRS[di];
+          const nx = player.x + dx * r, ny = player.y + dy * r;
+          if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+            if ((grid[ny]||'')[nx] === '#') { corridorNearby = true; break outer; }
+          }
+        }
+      }
+      if (corridorNearby) {
+        navCtx.wallSearchPhase = false;
+        navCtx.wallFollowPath = [];
+        navCtx.enclosedTick = 0;
+        console.log('[NAV] Exiting wall search — corridor tile within reach');
+        return false;
+      }
+    }
+
     // If in wall search but stairs became visible, exit wall search
     if (navCtx.wallSearchPhase && stairs) {
       navCtx.wallSearchPhase = false;

@@ -75,6 +75,17 @@
               }
             }
           }
+          // If next step is a closed door, open it instead of bumping
+          if (nch === '+') {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===(next.x-player.x) && ddy===(next.y-player.y));
+            if (idx >= 0 && !navCtx.triedDoors.has(next.x + ',' + next.y)) {
+              console.log(`[NAV] Level-explore: opening door at ${next.x},${next.y}`);
+              env.sendKey('o'.charCodeAt(0));
+              navCtx.pendingDir = idx;
+              return true;
+            }
+          }
           if (!PET_CHARS.has(nch) || !(nch === 'd' && navCtx.hadPetBlock)) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
@@ -125,6 +136,53 @@
         const next = bfsAvoiding(player.x, player.y, bestCorridor.x, bestCorridor.y, grid, blocked);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
+          // If next step is a closed door, open it
+          if (nch === '+') {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===(next.x-player.x) && ddy===(next.y-player.y));
+            if (idx >= 0 && !navCtx.triedDoors.has(next.x + ',' + next.y)) {
+              console.log(`[NAV] Level-explore (corridor): opening door at ${next.x},${next.y}`);
+              env.sendKey('o'.charCodeAt(0));
+              navCtx.pendingDir = idx;
+              return true;
+            }
+          }
+          if (!PET_CHARS.has(nch)) {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===(next.x-player.x) && ddy===(next.y-player.y));
+            if (idx >= 0) {
+              navCtx.lastMoveDir = idx;
+              env.sendKey(KEY[idx].charCodeAt(0));
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    // ---- No corridors visible but doors are visible: navigate to nearest door ----
+    if (!isInCorridor && features && features.doors && features.doors.length > 0) {
+      let nearestDoor = null, doorDist = Infinity;
+      for (const door of features.doors) {
+        if (navCtx.triedDoors && navCtx.triedDoors.has(door.x + ',' + door.y)) continue;
+        const dist = Math.abs(door.x - player.x) + Math.abs(door.y - player.y);
+        if (dist > 0 && dist < doorDist) { doorDist = dist; nearestDoor = door; }
+      }
+      if (nearestDoor) {
+        const next = bfsAvoiding(player.x, player.y, nearestDoor.x, nearestDoor.y, grid, blocked);
+        if (next) {
+          const nch = (grid[next.y]||'')[next.x] || ' ';
+          // If next step IS the door, open it
+          if (nch === '+') {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===(next.x-player.x) && ddy===(next.y-player.y));
+            if (idx >= 0) {
+              console.log(`[NAV] Level-explore (door target): opening door at ${next.x},${next.y}`);
+              env.sendKey('o'.charCodeAt(0));
+              navCtx.pendingDir = idx;
+              return true;
+            }
+          }
           if (!PET_CHARS.has(nch)) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
