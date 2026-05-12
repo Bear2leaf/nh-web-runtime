@@ -104,6 +104,7 @@
       wallFollowTargetRetries: 0,
       enclosedTick: 0,
       searchCooldownTick: 0,
+      wallSearchSuppressUntilTick: 0,
 
       // Teleport
       teleportAttempts: 0,

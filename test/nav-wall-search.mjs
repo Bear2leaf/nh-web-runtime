@@ -126,8 +126,13 @@
       navCtx.wallFollowPasses = 0;
       navCtx.searchedWallPos.clear();
       navCtx.enclosedTick = 0;
-      navCtx.corridorFailCount++;
-      console.log(`[NAV] Wall search gave up (${ratio|0}% searched). Trying corridors.`);
+      // Jump corridorFailCount to 5 immediately so the corridor handler force-forwards
+      // through dead-end corridors instead of retreating back to this same room.
+      navCtx.corridorFailCount = Math.max(navCtx.corridorFailCount + 1, 5);
+      // Suppress re-triggering wall search for ~300 ticks — give corridor force-forward
+      // a chance to actually escape the area.
+      navCtx.wallSearchSuppressUntilTick = tickCount + 300;
+      console.log(`[NAV] Wall search gave up (${ratio|0}% searched). Trying corridors. corridorFailCount=${navCtx.corridorFailCount}`);
       return true;
     }
 

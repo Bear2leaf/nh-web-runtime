@@ -200,7 +200,9 @@
       // Trigger wall search when enclosed for sustained period.
       // Also trigger when heavily oscillating in a room — even with visible doors,
       // the AI may be unable to reach them (locked doors, BFS path blocked).
-      if (!navCtx.wallSearchPhase && !navCtx.isInCorridor) {
+      const wallSearchSuppressed = navCtx.wallSearchSuppressUntilTick &&
+                                   navCtx.tickCount < navCtx.wallSearchSuppressUntilTick;
+      if (!navCtx.wallSearchPhase && !navCtx.isInCorridor && !wallSearchSuppressed) {
         const heavyOscillation = navCtx.isOscillating && navCtx.enclosedTick > 50 &&
                                  !navCtx.stairs;
         if ((isEnclosed && navCtx.enclosedTick > 100) ||
