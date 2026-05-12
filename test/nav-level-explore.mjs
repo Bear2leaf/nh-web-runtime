@@ -57,7 +57,7 @@
     if (boundary) {
       const bch = (grid[boundary.y]||'')[boundary.x] || ' ';
       if (isWalkable(bch) && !MONSTERS.has(bch)) {
-        const next = bfsAvoiding(player.x, player.y, boundary.x, boundary.y, grid, blocked);
+        const next = bfsAvoiding(player.x, player.y, boundary.x, boundary.y, grid, blocked, navCtx.openedDoors);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           if (nch === '`') {
@@ -133,7 +133,7 @@
         }
       }
       if (bestCorridor) {
-        const next = bfsAvoiding(player.x, player.y, bestCorridor.x, bestCorridor.y, grid, blocked);
+        const next = bfsAvoiding(player.x, player.y, bestCorridor.x, bestCorridor.y, grid, blocked, navCtx.openedDoors);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           // If next step is a closed door, open it
@@ -169,7 +169,7 @@
         if (dist > 0 && dist < doorDist) { doorDist = dist; nearestDoor = door; }
       }
       if (nearestDoor) {
-        const next = bfsAvoiding(player.x, player.y, nearestDoor.x, nearestDoor.y, grid, blocked);
+        const next = bfsAvoiding(player.x, player.y, nearestDoor.x, nearestDoor.y, grid, blocked, navCtx.openedDoors);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           // If next step IS the door, open it
@@ -238,7 +238,7 @@
         }
       }
       if (bestJunction) {
-        const next = bfsAvoiding(player.x, player.y, bestJunction.x, bestJunction.y, grid, blocked);
+        const next = bfsAvoiding(player.x, player.y, bestJunction.x, bestJunction.y, grid, blocked, navCtx.openedDoors);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           if (!PET_CHARS.has(nch)) {

@@ -71,7 +71,7 @@
    * blockedPositions: Set of "x,y" strings to treat as impassable.
    * Returns first step {x,y} toward target, or null.
    */
-  function bfsAvoiding(sx, sy, tx, ty, grid, blockedPositions) {
+  function bfsAvoiding(sx, sy, tx, ty, grid, blockedPositions, openDoors) {
     if (sx === tx && sy === ty) return null;
     const visited = Array.from({length: H}, () => new Uint8Array(W));
     const parent = Array.from({length: H}, () => new Array(W).fill(null));
@@ -92,7 +92,7 @@
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
-        if (!isBfsWalkable(ch)) continue;
+        if (!isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
         if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
         if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
         visited[ny][nx] = 1;
@@ -103,7 +103,7 @@
     return null;
   }
 
-  function bfs(sx, sy, tx, ty, grid) {
+  function bfs(sx, sy, tx, ty, grid, openDoors) {
     if (sx === tx && sy === ty) return null;
     const visited = Array.from({length: H}, () => new Uint8Array(W));
     const parent = Array.from({length: H}, () => new Array(W).fill(null));
@@ -124,7 +124,7 @@
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
-        if (!isBfsWalkable(ch)) continue;
+        if (!isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
         // Skip monsters (but allow target if it's a monster — we'll attack it)
         if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
         visited[ny][nx] = 1;

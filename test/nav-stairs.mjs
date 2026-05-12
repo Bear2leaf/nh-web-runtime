@@ -32,7 +32,7 @@
       }
 
       // BFS path to stairs
-      const next = bfs(player.x, player.y, stairs.x, stairs.y, grid);
+      const next = bfs(player.x, player.y, stairs.x, stairs.y, grid, navCtx.openedDoors);
       if (next) {
         navCtx.wallSearchPhase = false;
         navCtx.enclosedTick = 0;
@@ -77,7 +77,7 @@
             navCtx.pendingDir = DIRS.findIndex(([dx2,dy2]) => dx2===ddx && dy2===ddy);
             return true;
           }
-          const doorNext = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid);
+          const doorNext = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid, navCtx.openedDoors);
           if (doorNext) {
             const idx = DIRS.findIndex(([ddx2,ddy2]) =>
               ddx2===(doorNext.x-player.x) && ddy2===(doorNext.y-player.y));

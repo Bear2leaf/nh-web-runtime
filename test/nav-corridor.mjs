@@ -106,7 +106,7 @@
     }
 
     if (nearestRoomEntrance) {
-      const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid);
+      const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid, navCtx.openedDoors);
       if (next) {
         // Only reset failure counters when making genuine progress — not when oscillating
         // between room and corridor. If corridorFailCount is already elevated, preserve it
@@ -159,7 +159,7 @@
       }
     }
     if (bestCorridor) {
-      const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid);
+      const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid, navCtx.openedDoors);
       if (next) {
         if (navCtx.corridorFailCount === 0) {
           navCtx.enclosedTick = 0;
@@ -282,7 +282,7 @@
         }
       }
       if (nearestRoom) {
-        const next = bfs(player.x, player.y, nearestRoom.x, nearestRoom.y, grid);
+        const next = bfs(player.x, player.y, nearestRoom.x, nearestRoom.y, grid, navCtx.openedDoors);
         if (next) {
           const nextCh = (grid[next.y]||'')[next.x] || ' ';
           if (!PET_CHARS.has(nextCh) && !(nextCh === 'd' && hadPetBlock)) {
@@ -459,7 +459,7 @@
       }
     }
     if (nearestFloor) {
-      const next = bfs(player.x, player.y, nearestFloor.x, nearestFloor.y, grid);
+      const next = bfs(player.x, player.y, nearestFloor.x, nearestFloor.y, grid, navCtx.openedDoors);
       if (next) {
         const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
         if (idx >= 0) {

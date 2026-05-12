@@ -45,6 +45,30 @@ wall-follow路径遇到已试过的门→跳过目标而非再次踢；腿受伤
 ### 12. 饥饿时"."提示 (2026/05/12)
 `handleHpHunger`发送`.`触发"Are you waiting to get hit?" → 在step()顶部添加隐藏怪物检测
 
+### 13. BFS将已开门当作墙壁 (2026/05/12)
+**根本原因**：BFS的`isBfsWalkable()`对`'-'`和`'|'`返回false，导致AI打开门后无法用BFS路径穿过。
+
+**修复**：在`nav-core.mjs`的`bfs()`和`bfsAvoiding()`中添加可选参数`openDoors: Set`，BFS将其视为可通行。同时`nav-door.mjs`在成功开门/踢门后将该坐标加入`openedDoors`集合。
+
+**涉及文件**：
+- `nav-core.mjs`: `bfs()`、`bfsAvoiding()`新增`openDoors`参数
+- `nav-ai.mjs`: navCtx增加`openedDoors: new Set()`字段
+- `nav-door.mjs`: 开门/踢门时标记位置到`openedDoors`
+- `nav-corridor.mjs`: 所有`bfs()`调用添加`navCtx.openedDoors`
+- `nav-level-explore.mjs`: 所有`bfsAvoiding()`调用添加`navCtx.openedDoors`
+- `nav-stairs.mjs`: 所有`bfs()`调用添加`navCtx.openedDoors`
+- `nav-wall-search.mjs`: 所有`bfs()`调用添加`navCtx.openedDoors`
+
+### 14. corridorFailCount无法累积到阈值 (2026/05/12)
+走廊handler每次运行都将`corridorFailCount`重置为0，导致无法触发force-forward逻辑。
+
+**修复**：改为仅当`corridorFailCount === 0`时才重置`enclosedTick`，使失败计数能正常累积。`corridorFailCount >= 5`时走廊handler会强制向前冲而非折返。
+
+### 15. 走廊handler干扰墙壁搜索 (2026/05/12)
+走廊handler和墙壁搜索相互触发，形成振荡死循环：wall-search → 放弃 → corridor → enclosed → wall-search。
+
+**修复**：在走廊handler两个分支添加`!wallSearchPhase`守卫，使走廊handler在墙壁搜索期间静默退出。同时墙壁搜索放弃时设置`wallSearchSuppressUntilTick = tickCount + 300`冷却期，防止立即重新触发。
+
 ## 当前状态
 
 ### 基线测试 (git HEAD, 30次平均)
@@ -57,7 +81,7 @@ wall-follow路径遇到已试过的门→跳过目标而非再次踢；腿受伤
 ### 死因分析
 - **怪物战斗死亡** (~60%): AI遭遇jackal/newt/grid bug等怪物，战斗中被杀死
 - **饥饿死亡** (~5%): 修复#11后基本解决
-- **陷阱卡住** (~10%): "Really step into that pit?"循环，陷阱未被记录
+- **陷阱卡住** (~5%): "Really step into that pit?"循环，陷阱未被记录
 
 ### 本次会话尝试但无效的改动
 - 调整combat handler优先级（放食物/饥饿之前）→ 反而降低成功率
@@ -70,12 +94,14 @@ wall-follow路径遇到已试过的门→跳过目标而非再次踢；腿受伤
 3. **陷阱卡住** (~5%) — "Really step"陷阱检测不完善
 
 ## 代码文件
-- `test/nav-ai.mjs` — 主导航AI (~637行，refactored版本)
+- `test/nav-ai.mjs` — 主导航AI (~500行，refactored版本)
 - `test/nav-core.mjs` — 核心工具（BFS,地图扫描）
 - `test/nav-strategy.mjs` — 状态机处理 (dead code)
 - `src/shim-node.js` — Node.js WASM适配器
+- `test/nav-*.mjs` — 各功能handler模块（门、走廊、楼梯、探索、墙壁搜索等）
 
 ## 下一步建议
 1. 降低战斗优先级：遇到怪物时优先逃跑而非硬拼
 2. 改进陷阱检测：将"Really step"后的位置标记为陷阱
 3. 提高探索效率：减少在房间内振荡的时间
+4. 研究楼梯刷新机制：DLvl:1的`'>'`楼梯是否需要特殊触发条件

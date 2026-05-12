@@ -72,19 +72,24 @@
             continue;
           }
           navCtx.kickAttempts.set(doorKey, kickCount + 1);
+          // Once kicked, the tile may become '-'/'|' (broken door) — mark walkable
+          if (navCtx.openedDoors) navCtx.openedDoors.add(doorKey);
           console.log(`[NAV] Kicking door at ${doorKey} (attempt ${kickCount + 1}/${MAX_KICK_ATTEMPTS})`);
           env.sendKey(4); // ^D = kick
           navCtx.pendingKickDir = DIRS.findIndex(([dx,dy]) => dx===ddx && dy===ddy);
           return true;
         }
 
+        // Optimistically remember door position as walkable — once opened, the tile
+        // becomes '-' or '|', which BFS otherwise treats as a wall.
+        if (navCtx.openedDoors) navCtx.openedDoors.add(doorKey);
         env.sendKey('o'.charCodeAt(0));
         navCtx.pendingDir = DIRS.findIndex(([dx,dy]) => dx===ddx && dy===ddy);
         return true;
       }
 
       // Non-adjacent door — BFS to it
-      const next = bfs(player.x, player.y, door.x, door.y, grid);
+      const next = bfs(player.x, player.y, door.x, door.y, grid, navCtx.openedDoors);
       if (next) {
         const dist = Math.abs(door.x - player.x) + Math.abs(door.y - player.y);
         if (dist < bestDist) { bestDist = dist; bestDoor = door; bestNext = next; }

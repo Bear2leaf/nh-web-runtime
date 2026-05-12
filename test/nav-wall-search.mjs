@@ -177,7 +177,7 @@
         }
 
         // Navigate to target
-        const next = bfs(player.x, player.y, target.x, target.y, grid);
+        const next = bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
         if (next) {
           const nextCh = (grid[next.y]||'')[next.x] || ' ';
 
@@ -274,7 +274,7 @@
     if (navCtx.lastSearchTick > 0 && tickCount === navCtx.lastSearchTick + 1 && features) {
       if (features.stairsDown.length > 0) {
         const s = features.stairsDown[0];
-        const n = bfs(player.x, player.y, s.x, s.y, grid);
+        const n = bfs(player.x, player.y, s.x, s.y, grid, navCtx.openedDoors);
         if (n) {
           const idx = DIRS.findIndex(([ddx,ddy]) =>
             ddx===(n.x-player.x) && ddy===(n.y-player.y));
@@ -288,7 +288,7 @@
           if (dist < bestDist) { bestDist = dist; bestDoor = door; }
         }
         if (bestDoor) {
-          const n = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid);
+          const n = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid, navCtx.openedDoors);
           if (n) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(n.x-player.x) && ddy===(n.y-player.y));
@@ -301,7 +301,7 @@
     // Fallback: move toward nearest unsearched wall position
     const target = findNearestUnsearchedWall(player.x, player.y, grid, navCtx.searchedWallPos);
     if (target) {
-      const next = bfs(player.x, player.y, target.x, target.y, grid);
+      const next = bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
       if (next) {
         const idx = DIRS.findIndex(([ddx,ddy]) =>
           ddx===(next.x-player.x) && ddy===(next.y-player.y));

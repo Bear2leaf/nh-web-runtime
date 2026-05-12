@@ -117,6 +117,10 @@
       // Trap avoidance
       knownTrapPositions: new Set(),
 
+      // Opened doors: tiles that were '+' but are now '-' or '|' after opening.
+      // BFS treats these as walkable so the AI can navigate through them.
+      openedDoors: new Set(),
+
       // Derived state (updated each tick by updateMapAndState)
       grid: null,
       player: null,
