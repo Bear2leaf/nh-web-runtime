@@ -293,6 +293,12 @@
     // ---- Loop scheduler ----
     function loop() {
       if (navCtx.stopped) return;
+      // Check game end even when isReadyForInput() is false — prevents the loop
+      // from spinning on empty microtask queue when the WASM game has exited.
+      if (navCtx.env.isGameDone && navCtx.env.isGameDone()) {
+        stop('game-ended');
+        return;
+      }
       try {
         if (!navCtx.env.isReadyForInput || navCtx.env.isReadyForInput()) {
           step();
