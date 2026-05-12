@@ -53,14 +53,16 @@
     }
 
     // ---- Room-to-corridor navigation (when NOT in a corridor) ----
-    // Allow even during wall search — if there's a visible corridor exit,
-    // prefer using it over searching walls.
-    if (!isInCorridor) {
+    // During wall search, defer to the wall handler entirely — don't consume
+    // ticks with room-to-corridor navigation that prevents wall path progress.
+    if (!isInCorridor && !wallSearchPhase) {
       if (handleRoomToCorridor(navCtx)) return true;
     }
 
     // ---- Corridor following ----
-    if (isInCorridor) {
+    // During wall search, defer to the wall handler entirely — don't consume
+    // ticks with corridor oscillation that prevents wall path progress.
+    if (isInCorridor && !wallSearchPhase) {
       if (handleCorridorFollow(navCtx)) return true;
     }
 
@@ -109,9 +111,10 @@
         // Only reset failure counters when making genuine progress — not when oscillating
         // between room and corridor. If corridorFailCount is already elevated, preserve it
         // so that wall search / enclosed detection can trigger.
-        if (navCtx.corridorFailCount < 2) {
+        // NOTE: We do NOT reset corridorFailCount here — once failures start accumulating,
+        // they should persist until the AI either descends or force-forwards past the corridor.
+        if (navCtx.corridorFailCount === 0) {
           navCtx.enclosedTick = 0;
-          navCtx.corridorFailCount = 0;
         }
         const nextCh = (grid[next.y]||'')[next.x] || ' ';
         let idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
@@ -158,9 +161,8 @@
     if (bestCorridor) {
       const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid);
       if (next) {
-        if (navCtx.corridorFailCount < 2) {
+        if (navCtx.corridorFailCount === 0) {
           navCtx.enclosedTick = 0;
-          navCtx.corridorFailCount = 0;
         }
         const nextCh = (grid[next.y]||'')[next.x] || ' ';
         const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));

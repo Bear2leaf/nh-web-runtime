@@ -48,38 +48,15 @@
       if (posSet.size <= 4) isOscillating = true;
     }
 
-    // If in wall search but now in a corridor, exit wall search
-    if (navCtx.wallSearchPhase && isInCorridor) {
-      navCtx.wallSearchPhase = false;
-      navCtx.wallFollowPath = [];
-      navCtx.enclosedTick = 0;
-      console.log('[NAV] Exiting wall search — entered corridor');
-      return false;
-    }
-
-    // If in wall search but a corridor tile is within reach (3 steps), the AI has
-    // clearly found the level perimeter — let corridor/door handling take over.
-    // This prevents wall search from blocking forever when the BFS perimeter path
-    // goes through an unopened door.
-    if (navCtx.wallSearchPhase) {
-      let corridorNearby = false;
-      outer: for (let r = 1; r <= 3; r++) {
-        for (let di = 0; di < 4; di++) {
-          const [dx, dy] = DIRS[di];
-          const nx = player.x + dx * r, ny = player.y + dy * r;
-          if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
-            if ((grid[ny]||'')[nx] === '#') { corridorNearby = true; break outer; }
-          }
-        }
-      }
-      if (corridorNearby) {
-        navCtx.wallSearchPhase = false;
-        navCtx.wallFollowPath = [];
-        navCtx.enclosedTick = 0;
-        console.log('[NAV] Exiting wall search — corridor tile within reach');
-        return false;
-      }
-    }
+    // NOTE: We previously exited wall search when entering a corridor or when a
+    // corridor tile was within reach. Those checks caused infinite oscillation
+    // between room and corridor when both were visible but neither led to stairs.
+    // The corridor handler now defers to wall search (returns false when
+    // wallSearchPhase is true), so wall search can navigate through corridors
+    // back to room perimeter positions. Wall search still exits naturally when:
+    //   - Stairs become visible (below)
+    //   - Hunger becomes critical (above)
+    //   - Perimeter is mostly searched (in executeWallSearch give-up logic)
 
     // If in wall search but stairs became visible, exit wall search
     if (navCtx.wallSearchPhase && stairs) {
