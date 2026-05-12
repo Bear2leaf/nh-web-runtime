@@ -30,12 +30,17 @@
     // updateMapAndState() in nav-ai.mjs (before handlers run). This ensures the
     // logic always executes even when higher-priority handlers would consume the tick.
 
-    // If player is starving or weak, bail out of wall search to let food handler run
+    // If player is hungry (not just weak/fainting), bail out of wall search
+    // so the food handler can eat from inventory before starving
     if (navCtx.wallSearchPhase) {
       const hungerText = (env.getHunger() || '').trim();
-      if (hungerText === 'Weak' || hungerText === 'Fainting') {
+      const isHungry = hungerText === 'Hungry' || hungerText === 'Weak' ||
+                       hungerText === 'Fainting' || hungerText === 'Fainted';
+      const noFood = navCtx.msgs.some(m => m.includes("don't have anything to eat"));
+      if (isHungry) {
         navCtx.wallSearchPhase = false;
-        console.log('[NAV] Exiting wall search — hunger critical, letting food handler run');
+        navCtx.wallSearchSuppressUntilTick = tickCount + 2000;
+        console.log(`[NAV] Exiting wall search — hungry="${hungerText}" noFood=${noFood}, suppressing re-entry for 2000 ticks`);
         return false;
       }
     }
@@ -131,7 +136,7 @@
       navCtx.corridorFailCount = Math.max(navCtx.corridorFailCount + 1, 5);
       // Suppress re-triggering wall search for ~300 ticks — give corridor force-forward
       // a chance to actually escape the area.
-      navCtx.wallSearchSuppressUntilTick = tickCount + 300;
+      navCtx.wallSearchSuppressUntilTick = tickCount + 2000;
       console.log(`[NAV] Wall search gave up (${ratio|0}% searched). Trying corridors. corridorFailCount=${navCtx.corridorFailCount}`);
       return true;
     }

@@ -52,10 +52,11 @@
     const maxHp = env.getMaxHp() || 1;
     const curHp = env.getHp();
     const hpRatio = curHp / maxHp;
-    // More aggressive flee threshold: 70% (was 50%).
-    // Level 1 monsters can deal 4-6 damage per turn — fleeing earlier helps.
-    const lowHp = hpRatio < 0.7;
-    // Critical HP: even harder to recover from
+    // Flee threshold: 50% — fighting level-1 monsters is usually better than
+    // running (running just prolongs combat and lets them chase). Reverted from
+    // 70% which increased death rate in testing.
+    const lowHp = hpRatio < 0.5;
+    // Critical HP: try to flee aggressively when very low
     const criticalHp = hpRatio < 0.4;
 
     if (lowHp) {
