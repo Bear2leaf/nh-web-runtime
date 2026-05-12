@@ -36,12 +36,23 @@
     // Only active when no stairs are visible
     if (stairs) return false;
 
-    // Defer to wall search when it's active
+    // Critical hunger override: if we're starving (Weak/Fainting/Fainted) and
+    // no stairs/food visible, ignore wall-search phase and force exploration.
+    // Better to wander aimlessly than die starving in a room.
+    const hungerTrimmed = (env.getHunger() || '').trim();
+    const isCriticalHunger = hungerTrimmed === 'Weak' || hungerTrimmed === 'Fainting' ||
+                             hungerTrimmed === 'Fainted';
+    if (isCriticalHunger && !navCtx.stairs && !navCtx.food) {
+      navCtx.wallSearchPhase = false; // Break out of wall search
+      // Continue below to force-explore
+    }
+
+    // Defer to wall search when it's active (unless critical hunger override above)
     if (navCtx.wallSearchPhase) return false;
 
     // When in a corridor, let corridor handler deal with it
-    // UNLESS we're stuck (same position for too long)
-    if (isInCorridor && stuckCount < 10) return false;
+    // UNLESS we're stuck (same position for too long) or critical hunger
+    if (isInCorridor && stuckCount < 10 && !isCriticalHunger) return false;
 
     // ---- Oscillation check ----
     let isOscillating = false;

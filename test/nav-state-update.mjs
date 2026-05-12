@@ -134,7 +134,8 @@
     }
 
     // Detect trap positions from "Really step" messages (trap was avoided by shim saying 'n')
-    const trapMsg = navCtx.msgs.find(m => m.includes('Really step') && m.includes('trap'));
+    // NetHack messages: "Really step into that pit?" / "Really step onto that bear trap?"
+    const trapMsg = navCtx.msgs.find(m => m.includes('Really step'));
     if (trapMsg && navCtx.lastMoveDir >= 0) {
       const [dx, dy] = DIRS[navCtx.lastMoveDir];
       const trapX = navCtx.player.x + dx;

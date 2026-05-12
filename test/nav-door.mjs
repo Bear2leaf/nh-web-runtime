@@ -26,6 +26,10 @@
   function handleDoors(navCtx) {
     const { env, player, grid, features, triedDoors, legInjured } = navCtx;
 
+    // When wall search is active, let wall search handle navigation.
+    // Opening doors during wall search can interfere with perimeter walking.
+    if (navCtx.wallSearchPhase) return false;
+
     if (!navCtx.kickAttempts) navCtx.kickAttempts = new Map();
 
     const untriedDoors = features.doors.filter(d => {

@@ -15,6 +15,13 @@
   /**
    * Handle HP/hunger: faint recovery and eating when hungry.
    * Returns true if this handler consumed the tick.
+   *
+   * KEY INSIGHT (from NetHack/src/eat.c): Choking is locked-in at start_eating
+   * based on u.uhs == SATIATED. Once you start eating in SATIATED state, any
+   * food that pushes u.uhunger >= 2000 kills you (e.g., a corpse). The "hard
+   * time getting it down" warning at 1500 is your last safe stop.
+   *
+   * Therefore: NEVER eat when status shows "Satiated".
    */
   function handleHpHunger(navCtx) {
     const { env, tickCount, msgs } = navCtx;
@@ -27,6 +34,9 @@
       env.sendKey('.'.charCodeAt(0));
       return true;
     }
+
+    // SATIATED: never eat — choking will kill us. Just keep navigating.
+    if (hungerTrimmed === 'Satiated') return false;
 
     // Detect hunger from status field
     const isHungry = hungerTrimmed === 'Hungry' || hungerTrimmed === 'Weak' ||

@@ -30,7 +30,7 @@
       // But still track forced direction changes below
     } else if (stuckCount > 20 && (stuckCount % 20 === 0)) {
       // Check if stuck because of a trap — if so, try a different direction
-      const trapMsg = msgs.find(m => m.includes('Really step') && m.includes('trap'));
+      const trapMsg = msgs.find(m => m.includes('Really step'));
       if (trapMsg && lastMoveDir >= 0) {
         const { DIRS, KEY } = NH;
         // Compute the trap direction and mark it

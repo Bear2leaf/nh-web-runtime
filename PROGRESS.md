@@ -85,30 +85,64 @@ wall-follow路径遇到已试过的门→跳过目标而非再次踢；腿受伤
 **涉及文件**：
 - `nav-combat.mjs`: `lowHp`阈值从`hpRatio < 0.7`恢复为`hpRatio < 0.5`
 
+### 18. SATIATED状态噎死 (2026/05/12)
+参考NetHack源码`eat.c`发现：噎死由`canchoke`锁定，当开始进食时状态为`SATIATED`就会触发。AI在满状态吃了Lembas Wafer后噎死（"A little goes a long way" → choke）。
+
+**修复**：在`nav-hp-hunger.mjs`中添加SATIATED保护，不在该状态进食。
+
+**涉及文件**：
+- `nav-hp-hunger.mjs`: 添加`if (hungerTrimmed === 'Satiated') return false;`
+
+### 19. 陷阱检测关键字错误 (2026/05/12)
+陷阱消息"Really step into that pit?"包含"Really step"但不包含"trap"。原代码用`m.includes('trap')`检测失败。
+
+**修复**：移除`trap`关键字检查，仅用`Really step`检测。
+
+**涉及文件**：
+- `nav-stuck.mjs`: 陷阱检测条件修复
+- `nav-state-update.mjs`: 同上
+
+### 20. Door handler缺少wallSearchPhase守卫 (2026/05/12)
+墙壁搜索期间，门处理应该静默退出（与corridor handler一致）。原代码缺少守卫，导致开门干扰周长行走。
+
+**修复**：在`handleDoors`顶部添加`if (wallSearchPhase) return false;`
+
+**涉及文件**：
+- `nav-door.mjs`: 添加wallSearchPhase守卫
+
+### 21. 饥饿临界时强制探索 (2026/05/12)
+当处于Weak/Fainting状态且无楼梯/食物可见时，AI仍然被wall search阻塞。应该强制退出wall search并探索，而不是在房间里饿死。
+
+**修复**：在`nav-level-explore.mjs`中添加饥饿临界覆盖，忽略wallSearchPhase继续探索。
+
+**涉及文件**：
+- `nav-level-explore.mjs`: 添加isCriticalHunger覆盖逻辑
+
 ## 当前状态
 
-### 基线测试 (git HEAD, 30次平均)
-| 结果 | 占比 | 原因 |
+### 10次测试结果 (commit b60761e+修复#18-21, 2026/05/12)
+| 结果 | 次数 | 原因 |
 |------|------|------|
-| **成功 (descended)** | ~20% | 成功下到Dlvl:2 |
-| 死亡 (game-ended) | ~65% | 被怪物杀死/饿死 |
-| 卡住 (stuck) | ~15% | 导航循环 |
+| **成功 (descended)** | 0/10 | 未成功 |
+| 死亡 (game-ended) | 10/10 | 战斗~6, 饥饿~2, 噎死~1, stuck~1 |
+| 卡住 (stuck) | 0/10 | - |
 
 ### 死因分析
-- **怪物战斗死亡** (~60%): AI遭遇jackal/newt/grid bug等怪物，战斗中被杀死
-- **饥饿死亡** (~5%): 修复#11后基本解决
-- **陷阱卡住** (~5%): "Really step into that pit?"循环，陷阱未被记录
+- **怪物战斗死亡** (~60%): Level 1怪物（jackal/newt/fox）战斗中被杀死
+- **饥饿死亡** (~20%): 满血状态下饿死（探索效率不足，找不到楼梯/食物）
+- **噎死** (~10%): SATIATED状态进食导致（修复#18应该解决）
+- **卡住** (~10%): pet阻挡或走廊loop
 
-### 本次会话尝试但无效的改动
-- 调整combat handler优先级（放食物/饥饿之前）→ 反而降低成功率
-- flee-first战斗策略（HP<65%/70%就逃）→ 降低成功率
-- PET_CHARS重叠检测（fox 'f'）→ 未显著改善
+### 本次会话基于NetHack源码的优化
+1. **楼梯永远可见** — 位于房间内，不需搜索。AI应优先进入房间
+2. **饥饿营养系统** — 起始900点，每回合-1，约750回合后饿，900后虚弱
+3. **SATIATED不吃东西** — 防止噎死（NetHack eat.c: canchoke锁定机制）
+4. **陷阱检测修复** — "Really step"消息不含"trap"关键字
 
 ### 当前瓶颈 (优先级排序)
-1. **战斗死亡** (~60%) — Level 1怪物伤害高，AI战斗时HP管理不够
-2. **找不到楼梯** (~15%) — 探索算法效率不足
-3. **饥饿死亡** (~10%) — 即使退出wall search，无食物可用仍会饿死
-4. **陷阱卡住** (~5%) — "Really step"陷阱检测不完善
+1. **探索效率** — 找不到楼梯，在房间内loop直到饿死
+2. **战斗死亡** — Level 1怪物伤害高，AI战斗时HP管理不够
+3. **饥饿管理** — 无食物时应该积极传送/探索而非等待饿死
 
 ## 代码文件
 - `test/nav-ai.mjs` — 主导航AI (~500行，refactored版本)
@@ -118,7 +152,7 @@ wall-follow路径遇到已试过的门→跳过目标而非再次踢；腿受伤
 - `test/nav-*.mjs` — 各功能handler模块（门、走廊、楼梯、探索、墙壁搜索等）
 
 ## 下一步建议
-1. 改进探索效率：减少在房间内振荡/墙壁搜索的时间，更快找到楼梯
-2. 改进陷阱检测：将"Really step"后的位置标记为陷阱
-3. 饥饿无食物时的策略：当无食物且饥饿时，加速探索/传送而不是等待饿死
-4. 研究楼梯刷新机制：DLvl:1的`'>'`楼梯是否需要特殊触发条件
+1. **改进探索算法**：房间→门→走廊→新房间。楼梯永远在房间内
+2. **饥饿无食物时的策略**：传送或积极搜索新区域，而非在房间内等待饿死
+3. **战斗优化**：逃跑后不要被怪物追上，利用地形（穿门、下楼梯）
+4. **研究NetHack楼梯生成**：参考`mklev.c`，楼梯在房间内随机放置，无最小距离限制
