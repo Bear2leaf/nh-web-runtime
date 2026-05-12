@@ -28,9 +28,22 @@
             isInCorridor, wallSearchPhase, wallFollowPath, wallFollowIdx,
             searchedWallPos, enclosedTick, teleportAttempts, teleportFailed } = navCtx;
 
-    // Don't try to teleport if already attempted or failed
-    if (teleportAttempts >= MAX_TELEPORT_ATTEMPTS) return false;
-    if (teleportFailed) return false;
+    // Don't try to teleport if max attempts reached
+    if (teleportAttempts >= MAX_TELEPORT_ATTEMPTS) {
+      // Truly trapped: no exits, teleport exhausted — exit gracefully
+      const noExits = !stairs && (!features || features.doors.length === 0);
+      const noFood = !navCtx.food;
+      if (noExits && noFood && enclosedTick > 300) {
+        console.log(`[NAV] Truly trapped: no exits, no food, teleport exhausted. Exiting.`);
+        navCtx.stopped = true;
+        if (navCtx.onDone) navCtx.onDone('trapped');
+        return true;
+      }
+      return false;
+    }
+    // If teleport previously failed, retry periodically — player may have
+    // learned teleport spell or found a scroll in the meantime.
+    if (teleportFailed && (tickCount - (navCtx._lastTeleportRetry || 0)) < 200) return false;
 
     const noStairsOrDoors = !stairs && (features.doors.length === 0 ||
       (navCtx.triedDoors && navCtx.triedDoors.size >= features.doors.length));
@@ -75,6 +88,8 @@
 
   function doTeleport(navCtx) {
     navCtx.teleportAttempts++;
+    navCtx._lastTeleportRetry = navCtx.tickCount;
+    navCtx.teleportFailed = false; // Reset so we can retry later
     console.log(`[NAV] Attempting teleport (${navCtx.teleportAttempts}/${MAX_TELEPORT_ATTEMPTS})`);
     navCtx.env.sendKey(20); // ^T
     // Reset wall search state when teleporting

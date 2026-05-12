@@ -145,8 +145,16 @@
         return false;
       }
 
-      // If hungry, navigate to food and eat when we get there
-      if (isHungry) {
+      // If hungry, navigate to food and eat when we get there.
+      // But: if there are visible untried doors and no stairs, limit to nearby food
+      // (dist <= 5) so we don't oscillate between far-away food while ignoring doors.
+      const features = scanMap(grid);
+      const hasUntriedDoors = features.doors.some(d => {
+        const key = d.x + ',' + d.y;
+        return !(navCtx.triedDoors && navCtx.triedDoors.has(key));
+      });
+      const shouldNavigateToFood = isHungry && (!hasUntriedDoors || foodDist <= 5);
+      if (shouldNavigateToFood) {
         const blocked = knownTrapPositions || new Set();
         const next = bfsAvoiding(player.x, player.y, nearestFood.x, nearestFood.y, grid, blocked);
         if (next) {
