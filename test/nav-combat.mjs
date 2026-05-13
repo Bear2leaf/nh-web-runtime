@@ -64,6 +64,16 @@
       if (hitMsgMatcher(navCtx.msgs[i])) { hitMsg = navCtx.msgs[i]; break; }
     }
 
+    // Track consecutive on-tile hits for aggressive escape decisions
+    if (hitMsg) {
+      if (navCtx._lastOnTileHitTick && tickCount === navCtx._lastOnTileHitTick + 3) {
+        navCtx._consecutiveOnTileHits = (navCtx._consecutiveOnTileHits || 0) + 1;
+      } else if (!navCtx._lastOnTileHitTick || tickCount !== navCtx._lastOnTileHitTick) {
+        navCtx._consecutiveOnTileHits = 1;
+      }
+      navCtx._lastOnTileHitTick = tickCount;
+    }
+
     // Debounce: hitMsgs stay in the buffer for many ticks.
     // KEY FIX: Use ANY hit message in buffer as trigger (not just most-recent).
     // Interface prompts (e.g., "What do you want to read?") can push the bite message
@@ -78,57 +88,91 @@
       const maxHp = env.getMaxHp() || 1;
       const curHp = env.getHp();
       const hpRatio = curHp / maxHp;
-      console.log(`[NAV-CBT] On-tile hitMsg="${hitMsg}" hp=${curHp}/${maxHp} tick=${tickCount}`);
+      const consecHits = navCtx._consecutiveOnTileHits || 1;
+      console.log(`[NAV-CBT] On-tile hitMsg="${hitMsg}" hp=${curHp}/${maxHp} consecHits=${consecHits} tick=${tickCount}`);
 
-      // At >= 30% HP, force-fight immediately. Fleeing doesn't help because
-      // on-tile monsters follow. At low HP, try to flee first.
-      if (hpRatio >= 0.3) {
-        // Cycle through directions so we try all 8 before repeating.
+      // CRITICAL: On-tile monster (u.ustuck) is very dangerous — escaping has ~7.5% success rate.
+      // If HP is dropping rapidly (2+ consecutive hits), try teleport immediately.
+      // Otherwise, flee aggressively at 50% HP (not just 30%).
+      if (consecHits >= 2 && hpRatio < 0.5) {
+        // Teleport immediately — we're being eaten alive by an invisible/ustuck monster
+        console.log(`[NAV-CBT] CRITICAL: ${consecHits} consecutive hits, teleporting!`);
+        if (tickCount - (navCtx._lastTeleportTick || 0) > 10) {
+          navCtx._lastTeleportTick = tickCount;
+          navCtx.teleportAttempts = (navCtx.teleportAttempts || 0) + 1;
+          env.sendKey(20); // Ctrl-T for teleport
+          return true;
+        }
+      }
+
+      // At >= 50% HP with on-tile monster, try to flee first (aggressive flee).
+      // On-tile monsters deal 2-3 damage per hit, which is lethal quickly.
+      if (hpRatio >= 0.5) {
+        // Try to flee first
+        const shuffled = shuffleDirs();
+        for (const fi of shuffled) {
+          const [fdx, fdy] = DIRS[fi];
+          const nx = player.x + fdx, ny = player.y + fdy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (grid[ny]||'')[nx] || ' ';
+          if (!isWalkable(ch) || MONSTERS.has(ch) || blocked.has(nx + ',' + ny)) continue;
+          const isDiag = Math.abs(fdx) === 1 && Math.abs(fdy) === 1;
+          if (isDiag && isInCorridor) continue;
+          if (isDiag) {
+            const ch1 = (grid[player.y]||'')[player.x + fdx] || ' ';
+            const ch2 = (grid[player.y + fdy]||'')[player.x] || ' ';
+            if (!isBfsWalkable(ch1) && !isBfsWalkable(ch2)) continue;
+          }
+          navCtx.lastMoveDir = fi;
+          env.sendKey(KEY[fi].charCodeAt(0));
+          return true;
+        }
+        // Can't flee — force-fight, cycling directions
         navCtx._onTileFightIdx = (navCtx._onTileFightIdx || 0) % 8;
         const fightDir = navCtx._onTileFightIdx;
         navCtx._onTileFightIdx++;
-        console.log(`[NAV-CBT] On-tile force-fight dir=${fightDir} hp=${curHp}/${maxHp} tick=${tickCount}`);
+        console.log(`[NAV-CBT] On-tile can't flee — force-fighting dir=${fightDir} tick=${tickCount}`);
         env.sendKey('F'.charCodeAt(0));
         navCtx.pendingDir = fightDir;
         return true;
       }
 
-      // Low HP: try to flee first.
-      const shuffled = shuffleDirs();
-      for (const fi of shuffled) {
-        const [fdx, fdy] = DIRS[fi];
-        const nx = player.x + fdx, ny = player.y + fdy;
-        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-        const ch = (grid[ny]||'')[nx] || ' ';
-        if (!isWalkable(ch) || MONSTERS.has(ch) || blocked.has(nx + ',' + ny)) continue;
-        const isDiag = Math.abs(fdx) === 1 && Math.abs(fdy) === 1;
-        if (isDiag && isInCorridor) continue;
-        if (isDiag) {
-          const ch1 = (grid[player.y]||'')[player.x + fdx] || ' ';
-          const ch2 = (grid[player.y + fdy]||'')[player.x] || ' ';
-          if (!isBfsWalkable(ch1) && !isBfsWalkable(ch2)) continue;
+      // At < 50% HP: try teleport first, then flee
+      if (hpRatio < 0.5) {
+        // Try teleport as priority escape
+        if (tickCount - (navCtx._lastTeleportTick || 0) > 10) {
+          navCtx._lastTeleportTick = tickCount;
+          navCtx.teleportAttempts = (navCtx.teleportAttempts || 0) + 1;
+          console.log(`[NAV-CBT] On-tile monster at low HP (${hpRatio}), teleporting`);
+          env.sendKey(20); // Ctrl-T for teleport
+          return true;
         }
-        navCtx.lastMoveDir = fi;
-        env.sendKey(KEY[fi].charCodeAt(0));
+        // Teleport on cooldown — try flee
+        const shuffled = shuffleDirs();
+        for (const fi of shuffled) {
+          const [fdx, fdy] = DIRS[fi];
+          const nx = player.x + fdx, ny = player.y + fdy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (grid[ny]||'')[nx] || ' ';
+          if (!isWalkable(ch) || MONSTERS.has(ch) || blocked.has(nx + ',' + ny)) continue;
+          const isDiag = Math.abs(fdx) === 1 && Math.abs(fdy) === 1;
+          if (isDiag && isInCorridor) continue;
+          navCtx.lastMoveDir = fi;
+          env.sendKey(KEY[fi].charCodeAt(0));
+          return true;
+        }
+        // Can't flee — force-fight
+        navCtx._onTileFightIdx = (navCtx._onTileFightIdx || 0) % 8;
+        const fightDir = navCtx._onTileFightIdx;
+        navCtx._onTileFightIdx++;
+        console.log(`[NAV-CBT] On-tile at <50% HP, can't flee — force-fighting dir=${fightDir} tick=${tickCount}`);
+        env.sendKey('F'.charCodeAt(0));
+        navCtx.pendingDir = fightDir;
         return true;
       }
-      // Can't flee — force-fight even at low HP, cycle through directions
-      navCtx._onTileFightIdx = (navCtx._onTileFightIdx || 0) % 8;
-      const fightDir = navCtx._onTileFightIdx;
-      navCtx._onTileFightIdx++;
-      console.log(`[NAV-CBT] On-tile can't flee — force-fighting dir=${fightDir} tick=${tickCount}`);
-      env.sendKey('F'.charCodeAt(0));
-      navCtx.pendingDir = fightDir;
-      return true;
     }
 
-    // If no adjacent hostile and no hit message, let other handlers run
-    if (!adjHostile) return false;
 
-    const dx = adjHostile.x - player.x;
-    const dy = adjHostile.y - player.y;
-    const maxHp = env.getMaxHp() || 1;
-    const curHp = env.getHp();
     const hpRatio = curHp / maxHp;
     // Flee threshold: 10% — in NetHack, fleeing from an adjacent monster triggers
     // an attack of opportunity and the monster follows. Fighting almost always

@@ -223,6 +223,12 @@
         navCtx.enclosedTick = 0;
       }
 
+      // During wall search, also increment enclosedTick so teleport can trigger
+      // when wall search is stuck for too long (enclosedTick > 500 check in nav-teleport)
+      if (navCtx.wallSearchPhase && !navCtx.isInCorridor) {
+        navCtx.enclosedTick += 0.2;  // Slow growth during wall search when stuck
+      }
+
       // If corridors are visible, the player is not enclosed — reset enclosedTick
       // so wall search doesn't accidentally trigger when corridors are the obvious exit
       if (corridorVisible && !navCtx.wallSearchPhase) {
