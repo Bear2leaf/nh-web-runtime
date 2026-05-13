@@ -339,8 +339,11 @@
       }
 
       // ---- Hard stuck timeout teleport ----
-      if (navCtx.stuckCount > 500 && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
-        console.log(`[NAV] Hard stuck timeout at tick=${navCtx.tickCount} stuck=${navCtx.stuckCount}, teleporting`);
+      // Aggressive teleport when stuck in wall search (wfIdx=0 means no progress)
+      const inWallSearch = navCtx.wallSearchPhase && navCtx.wallFollowPath.length > 0 && navCtx.wallFollowIdx === 0;
+      if ((navCtx.stuckCount > 150 && inWallSearch) ||
+          (navCtx.stuckCount > 500 && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS)) {
+        console.log(`[NAV] Hard stuck: tick=${navCtx.tickCount} stuck=${navCtx.stuckCount} wallSearch=${inWallSearch}, teleporting`);
         if (tryTeleport(navCtx)) return true;
       }
 

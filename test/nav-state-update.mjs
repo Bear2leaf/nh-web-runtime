@@ -241,9 +241,9 @@
       // should explore them instead of wall search wasting ticks.
       const wallSearchSuppressed = navCtx.wallSearchSuppressUntilTick &&
                                    navCtx.tickCount < navCtx.wallSearchSuppressUntilTick;
-      if (!navCtx.wallSearchPhase && !navCtx.isInCorridor && !wallSearchSuppressed && !corridorVisible) {
-        const heavyOscillation = navCtx.isOscillating && navCtx.enclosedTick > 40 &&
-                                 !navCtx.stairs;
+      // Don't trigger wall search if stairs are visible — navigate directly to them
+      if (!navCtx.wallSearchPhase && !navCtx.isInCorridor && !wallSearchSuppressed && !corridorVisible && !navCtx.stairs) {
+        const heavyOscillation = navCtx.isOscillating && navCtx.enclosedTick > 40;
         if ((isEnclosed && navCtx.enclosedTick > 200) ||
             (levelSearchTimeout && navCtx.enclosedTick > 20) ||
             heavyOscillation) {
