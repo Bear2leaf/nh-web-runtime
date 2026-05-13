@@ -9,13 +9,15 @@
  *   - Default (scheduler): forks worker pool, assigns trials, prints stats.
  *   - Worker (NH_WORKER=1): loads WASM once, runs trials via IPC on demand.
  *
- * Each trial re-instantiates the WASM module (~25ms), keeping trials isolated
- * without the per-trial process spawn overhead.
+ * Each trial instantiates a fresh WASM module instance from a pre-compiled
+ * WebAssembly.Module (~3ms), keeping trials isolated without the per-trial
+ * process spawn or re-compile overhead.
  */
 
 import { fork } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import fs from 'fs';
 
 import shimNode from '../src/shim-node.js';
 import { NHNodeEnv } from './nav-env-node.js';
@@ -52,6 +54,7 @@ const WASM_BIN = join(WASM_DIR, 'nethack.wasm');
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _moduleFactory = null;
+let _wasmModule = null;
 
 async function getModuleFactory() {
     if (_moduleFactory) return _moduleFactory;
@@ -65,15 +68,31 @@ async function getModuleFactory() {
     return ModuleFactory;
 }
 
+async function getWasmModule() {
+    if (_wasmModule) return _wasmModule;
+    const wasmBuffer = fs.readFileSync(WASM_BIN);
+    _wasmModule = await WebAssembly.compile(wasmBuffer);
+    return _wasmModule;
+}
+
 async function runOneTrial(trialNum, totalTrials) {
     shimNode.resetShimState();
 
-    const mod = await (await getModuleFactory())({
+    const [ModuleFactory, wasmModule] = await Promise.all([
+        getModuleFactory(),
+        getWasmModule(),
+    ]);
+
+    const mod = await ModuleFactory({
         noInitialRun: true,
         arguments: ['nethack', '-D', 'notutorial'],
         print: () => {},
         printErr: () => {},
-        locateFile: (f) => (f === 'nethack.wasm' || f.endsWith('.wasm')) ? `file://${WASM_BIN}` : f,
+        instantiateWasm: (importObject, receiveInstance) => {
+            WebAssembly.instantiate(wasmModule, importObject).then((instance) => {
+                receiveInstance(instance, wasmModule);
+            });
+        },
         onRuntimeInitialized() {
             globalThis.nethackShimCallback = shimNode.nethackShimCallback;
             this.ccall('shim_graphics_set_callback', null, ['string'], ['nethackShimCallback']);
