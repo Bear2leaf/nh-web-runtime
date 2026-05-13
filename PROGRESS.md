@@ -1,4 +1,4 @@
-# NetHack Navigation AI — Progress Report (2026/05/12)
+# NetHack Navigation AI — Progress Report (2026/05/13)
 
 ## 参考
 `./NetHack`为当前游戏底层引擎，在识别到无法正常处理的逻辑时，可以参考源码进行理解并实现解决方案
@@ -6,7 +6,76 @@
 ## 目标
 让AI从Dlvl:1成功下到Dlvl:2。
 
+## 当前性能
+
+**100次大样本（当前最佳代码）**: 12% 成功 / 65% 死亡 / 23% 卡住
+
+| 批次 | 成功 | 死亡 | 卡住 | 备注 |
+|------|------|------|------|------|
+| 纯基线 50次 | 14% (7/50) | 62% (31/50) | 24% (12/50) | git checkout 原始状态 |
+| 100次基线 | 9% (9/100) | 62% (62/100) | 29% (29/100) | 早期基线 |
+| **100次当前最佳** | **12% (12/100)** | **65% (65/100)** | **23% (23/100)** | **kiting+陷阱标记+宠物节流** |
+| 并行20次 | 15% (3/20) | 70% (14/20) | 15% (3/20) | 小样本验证 |
+| 并行50次 | 4% (2/50) | 76% (38/50) | 20% (10/50) | 小样本波动 |
+
+**主要瓶颈**: 战斗死亡(~60%)、饥饿/疾病(~5%)、陷阱循环(~4%)、宠物交换(~6%)、物品oscillation(~6%)
+
+> **关键发现**: 50次样本极不可靠（波动范围 4%-18%），**100次大样本**显示真实成功率约 **12%**。
+> 当前架构支持并行运行：`node test/node-runner.js [max_tries] [concurrency]`
+
 ## 已修复的问题
+
+### 架构重构：Worker Pool + WASM 复用 (2026/05/13)
+- `test/node-runner.js` → 单一文件双模式（scheduler + worker），支持 `max_tries` 和 `concurrency` 参数
+- 4 个持久化 worker 进程，每个只加载 WASM 一次；每次 trial 重新实例化模块（~25ms）
+- 解决了串行 `for` 循环和每 trial `spawn` 进程的开销；100 次测试从 ~8min 降至 **~50s**（~10x 加速）
+
+### 35. 战斗低HP风筝 (kiting) (2026/05/13)
+`nav-combat.mjs` 添加低HP（<35%）撤退逻辑：优先朝怪物反方向移动，避开已知陷阱和怪物。减少硬刚到底的死亡。
+
+### 36. node-runner 消息过滤 (2026/05/13)
+过滤死亡详情中的 `"Do you want..."` YN 提示，显示真正导致死亡的游戏消息。
+
+### 22. nav-level-explore.mjs 方向计算bug (2026/05/13)
+`DIRS.findIndex(([ddx,ddy]) => ddx===ddx && ddy===ddy)` 因变量遮蔽导致 `idx` 恒为0。修复为 `dirDx === ddx && dirDy === ddy`。
+
+### 23. nav-stairs.mjs lastStairsPos 缺少 stairsType (2026/05/13)
+`lastStairsPos.stairsType !== '<'` 中 `stairsType` 从未定义。添加 `stairsType: '>'` 并在判断时使用 `=== '>'`。
+
+### 24. BFS不避开已知陷阱 (2026/05/13)
+`nav-door.mjs`、`nav-stairs.mjs`、`nav-corridor.mjs`、`nav-wall-search.mjs` 使用 `bfs()` 而非 `bfsAvoiding()`，导致路径规划经过已知陷阱。
+
+### 25. 对角线门打开bug (2026/05/13)
+NetHack `o` 命令只能打开正交相邻门，但代码用 `Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1` 允许对角线，导致 "You see no door there" 无限循环。修复涉及 `nav-door.mjs`、`nav-level-explore.mjs`、`nav-stairs.mjs`、`nav-corridor.mjs`、`nav-wall-search.mjs`。
+
+### 26. petSwapBlocked 在 lowHp 时被跳过 (2026/05/13)
+`petSwapBlocked` 在 `lowHp` 或 `isHungryCombined` 时被跳过，导致濒死时仍和宠物交换。改为仅在 `stairs` 可见时跳过。
+
+### 27. consecutivePetSwaps 立即重置 (2026/05/13)
+`consecutivePetSwaps` 在没有交换消息时立即重置为0，导致宠物间隔交换无法累积。改为缓慢衰减（-0.5/tick）。
+
+### 28. stairs rush 因 lowHp 跳过 (2026/05/13)
+楼梯在5格内时，如果 `lowHp` 为 true 则跳过 stairs rush，导致低HP时仍战斗而非跑向楼梯。移除 `!navCtx.lowHp` 条件，并扩展到低HP时无限距离优先楼梯。
+
+### 29. 食物脚下不拾取 (2026/05/13)
+`floorFoodMsg` 只在 `isHungry` 时触发吃，不饿时不拾取，导致宠物偷走食物。改为不饿时发送 ',' 拾取。
+
+### 30. 传送缺少饥饿/宠物触发 (2026/05/13)
+`nav-teleport.mjs` 缺少饥饿无食物和宠物长期阻挡的传送条件。添加 `isCriticalHunger && noFood` 和 `hadPetBlock && stuckCount > 50` 触发。
+
+### 31. nav-level-explore 门尝试计数不共享 (2026/05/13)
+`handleLevelExplore` 和 `handleDoors` 各自维护独立的 `doorOpenAttempts`，导致锁门无法触发踢门。添加共享计数逻辑。
+
+### 32. pendingKeys 不设置 lastMoveDir (2026/05/13)
+`handlePendingKeys` 发送方向键时不设置 `lastMoveDir`，导致通过 pending 移动后的陷阱检测失败。**注意：后续尝试修复此问题（设置 lastMoveDir = pendingDir）但导致严重的陷阱/探索退化，已回滚。**
+
+### 33. wall-search fallback bfs 未改 (2026/05/13)
+`nav-wall-search.mjs` 中三元表达式 fallback 分支仍使用 `bfs()`，改为 `bfsAvoiding()`。
+
+### 34. 全局消息检测补充 (2026/05/13)
+- "You see no door there" → 标记门为 tried
+- "This door is locked" → 增加 doorOpenAttempts
+- "squeaky board" / "teleportation trap" → 标记陷阱位置
 
 ### 1. 逃离阈值bug
 HP=4/10时，`hpRatio=0.4 < 0.4`为false → 改为`< 0.5`
@@ -145,10 +214,19 @@ wall-follow路径遇到已试过的门→跳过目标而非再次踢；腿受伤
 3. **SATIATED不吃东西** — 防止噎死（NetHack eat.c: canchoke锁定机制）
 4. **陷阱检测修复** — "Really step"消息不含"trap"关键字
 
-### 当前瓶颈 (优先级排序)
-1. **探索效率** — 找不到楼梯，在房间内loop直到饿死
-2. **战斗死亡** — Level 1怪物伤害高，AI战斗时HP管理不够
-3. **饥饿管理** — 无食物时应该积极传送/探索而非等待饿死
+### 当前瓶颈 (基于100次大样本)
+1. **战斗死亡 (~62%)** — jackal/newt/fox/sewer rat等低级怪物围攻，AI纯攻击策略生存率低
+2. **卡住 (~27%)** — 陷阱循环(arrow/bear/magic trap)、宠物交换oscillation、物品oscillation、门锁定循环
+3. **饥饿死亡 (~5%)** — 少数案例饿死，多数在饿死前已被怪物杀死
+4. **探索效率** — 非主要瓶颈，AI通常能找到楼梯但活不到那一刻
+
+### 本次会话新增修复
+1. **nav-modal.mjs — 陷阱标记增强** — `lastMoveDir`为-1时使用`lastSentDir`fallback，否则标记所有8个相邻可行走格子为潜在陷阱
+2. **nav-corridor.mjs — 宠物交换节流** — oscillation中遇到宠物阻挡时检查全局`petSwapBlocked`，被节流则放弃走廊处理
+3. **nav-stuck.mjs — 阈值降低** — 陷阱恢复从stuckCount>20降到>10，更早介入
+4. **nav-ai.mjs — 保守低HP楼梯冲刺** — 正常HP时距离≤5冲刺，低HP时仅距离≤3冲刺，避免长距离被怪物追击
+5. **node-runner.js — max-ticks退出码** — 返回124而非1，避免被batch-runner误归类为"other"
+6. **batch-runner.js — 超时延长** — 3分钟→6分钟，匹配node-runner的5分钟内部超时
 
 ## 代码文件
 - `test/nav-ai.mjs` — 主导航AI (~500行，refactored版本)
@@ -156,6 +234,7 @@ wall-follow路径遇到已试过的门→跳过目标而非再次踢；腿受伤
 - `test/nav-strategy.mjs` — 状态机处理 (dead code)
 - `src/shim-node.js` — Node.js WASM适配器
 - `test/nav-*.mjs` — 各功能handler模块（门、走廊、楼梯、探索、墙壁搜索等）
+- `test/node-runner.js` — **单一文件双模式**（scheduler + worker pool，`max_tries` + `concurrency`）
 
 ## 下一步建议
 1. **改进探索算法**：房间→门→走廊→新房间。楼梯永远在房间内

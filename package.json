@@ -4,9 +4,8 @@
   "description": "",
   "main": "game.js",
   "scripts": {
-    "test": "playwright test",
-    "test:ui": "playwright test --ui",
-    "test:node": "node test/node-runner.js"
+    "test": "node test/node-runner.js",
+    "test:e2e": "playwright test"
   },
   "repository": {
     "type": "git",

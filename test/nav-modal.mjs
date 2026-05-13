@@ -96,15 +96,32 @@
       if (ynText.includes('Really step')) {
         env.sendKey('n'.charCodeAt(0));
         // Mark trap position so pathfinding avoids it
-        if (navCtx.lastMoveDir >= 0 && navCtx.player) {
+        let trapDir = navCtx.lastMoveDir;
+        if (trapDir < 0 && navCtx.lastSentDir >= 0) trapDir = navCtx.lastSentDir;
+        if (trapDir >= 0 && navCtx.player) {
           const { DIRS } = NH;
-          const [tdx, tdy] = DIRS[navCtx.lastMoveDir];
+          const [tdx, tdy] = DIRS[trapDir];
           const trapX = navCtx.player.x + tdx;
           const trapY = navCtx.player.y + tdy;
           const trapKey = trapX + ',' + trapY;
           if (!navCtx.knownTrapPositions.has(trapKey)) {
             navCtx.knownTrapPositions.add(trapKey);
-            console.log(`[NAV-MODAL] Trap prompt detected, marking trap at ${trapKey}`);
+            console.log(`[NAV-MODAL] Trap prompt detected, marking trap at ${trapKey} (dir=${trapDir})`);
+          }
+        } else if (navCtx.player) {
+          // Fallback: mark all adjacent walkable tiles as potential traps
+          const { DIRS, W, H } = NH;
+          for (const [dx, dy] of DIRS) {
+            const tx = navCtx.player.x + dx, ty = navCtx.player.y + dy;
+            if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
+            const ch = (navCtx.grid[ty]||'')[tx] || ' ';
+            if (NH.isWalkable(ch)) {
+              const trapKey = tx + ',' + ty;
+              if (!navCtx.knownTrapPositions.has(trapKey)) {
+                navCtx.knownTrapPositions.add(trapKey);
+                console.log(`[NAV-MODAL] Trap prompt with no direction, marking adjacent ${trapKey}`);
+              }
+            }
           }
         }
         return true;

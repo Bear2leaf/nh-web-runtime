@@ -88,6 +88,49 @@ export function setModule(mod) {
     _mod = mod;
 }
 
+export function resetShimState() {
+    shimState.mapRows = [];
+    shimState.mapColors = [];
+    for (let y = 0; y < MAP_HEIGHT; y++) {
+        shimState.mapRows[y] = new Array(MAP_WIDTH).fill(' ');
+        shimState.mapColors[y] = new Array(MAP_WIDTH).fill(0);
+    }
+    shimState.messages = [];
+    shimState.hp = '';
+    shimState.maxHp = '';
+    shimState.hunger = '';
+    shimState.dlvl = '';
+    shimState.role = '';
+    shimState.str = ''; shimState.dex = ''; shimState.con = ''; shimState.int = ''; shimState.wis = ''; shimState.cha = '';
+    shimState.align = ''; shimState.score = ''; shimState.cap = ''; shimState.gold = '';
+    shimState.energy = ''; shimState.maxEnergy = '';
+    shimState.xp = ''; shimState.ac = ''; shimState.time = ''; shimState.condition = '';
+    shimState.weapon = ''; shimState.armor = ''; shimState.terrain = ''; shimState.vers = '';
+    shimState.ynVisible = false;
+    shimState.ynText = '';
+    shimState.ynValidChars = '';
+    shimState.ynDefaultChar = 'n'.charCodeAt(0);
+    shimState.menuVisible = false;
+    shimState.menuText = '';
+    shimState.menuItems = [];
+    shimState.lastMenuPrompt = '';
+    shimState.inputBuffer = [];
+    shimState.inputResolve = null;
+    shimState.ynResolve = null;
+    shimState.menuResolve = null;
+    shimState.done = false;
+    shimState.nethackReady = false;
+    shimState.mapWinId = null;
+    shimState.inventoryWinId = null;
+    shimState.isInventoryMenuFlag = false;
+    shimState.callback_call_count = {};
+    shimState.get_nh_event_count = 0;
+    shimState.last_log_time = Date.now();
+    shimState.cursorX = 0;
+    shimState.cursorY = 0;
+    shimState.lastLevelDesc = '';
+}
+
 // ---- Map init --------------------------------------------------------------
 
 function initMap() {
@@ -669,4 +712,5 @@ export default {
     waitForCondition,
     nethackShimCallback,
     setModule,
+    resetShimState,
 };

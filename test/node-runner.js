@@ -1,16 +1,26 @@
 /**
- * node-runner.js — Node.js test runner for NetHack WASM with nav-ai.
+ * node-runner.js — NetHack Navigation AI batch test runner.
  *
- * Loads the WASM module directly, bypasses the browser, and runs
- * the same nav-ai code via the NHNodeEnv adapter.
+ * Usage: node test/node-runner.js [max_tries] [concurrency]
+ *   max_tries:   total number of trials (default: 1)
+ *   concurrency: number of parallel workers (default: 4)
  *
- * Usage: node test/node-runner.js
+ * Dual-mode file:
+ *   - Default (scheduler): forks worker pool, assigns trials, prints stats.
+ *   - Worker (NH_WORKER=1): loads WASM once, runs trials via IPC on demand.
+ *
+ * Each trial re-instantiates the WASM module (~25ms), keeping trials isolated
+ * without the per-trial process spawn overhead.
  */
+
+import { fork } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
 import shimNode from '../src/shim-node.js';
 import { NHNodeEnv } from './nav-env-node.js';
 
-// Import nav modules in dependency order (IIFEs set globalThis.NHNav)
+// Nav modules (IIFEs set globalThis.NHNav)
 import './nav-core.mjs';
 import './nav-helpers.mjs';
 import './nav-state-update.mjs';
@@ -29,136 +39,216 @@ import './nav-level-explore.mjs';
 import './nav-teleport.mjs';
 import { startNavigation } from './nav-ai.mjs';
 
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const ROOT = join(__dirname, '..');
 
-// Locate WASM files
-const WASM_DIR = join(ROOT, 'NetHack', 'targets', 'wasm');
-const WASM_JS = join(WASM_DIR, 'nethack.js');
+// ── WASM paths ────────────────────────────────────────────────────────────
+const WASM_DIR = join(__dirname, '..', 'NetHack', 'targets', 'wasm');
+const WASM_JS  = join(WASM_DIR, 'nethack.js');
 const WASM_BIN = join(WASM_DIR, 'nethack.wasm');
 
-console.log('[RUNNER] WASM JS:', WASM_JS);
-console.log('[RUNNER] WASM BIN:', WASM_BIN);
+// ═══════════════════════════════════════════════════════════════════════════
+//  SHARED CORE
+// ═══════════════════════════════════════════════════════════════════════════
 
-// ---- Load WASM module ----
+let _moduleFactory = null;
 
-const require = createRequire(import.meta.url);
-
-// Load the nethack.js ESM module
-const nethackModuleUrl = `file://${WASM_JS}`;
-const { default: ModuleFactory } = await import(nethackModuleUrl).catch(e => {
-    console.error('[RUNNER] Failed to load nethack.js:', e.message);
-    console.error('[RUNNER] Make sure you have built the WASM: make');
-    process.exit(1);
-});
-
-console.log('[RUNNER] Module factory loaded');
-
-// ---- Instantiate WASM ----
-
-const mod = await ModuleFactory({
-    noInitialRun: true,
-    arguments: ['nethack', '-D', 'notutorial'],
-    print: (text) => console.log('[WASM-OUT]', text),
-    printErr: (text) => console.log('[WASM-ERR]', text),
-    locateFile: (f) => {
-        if (f === 'nethack.wasm' || f.endsWith('.wasm')) {
-            return `file://${WASM_BIN}`;
-        }
-        return f;
-    },
-
-    onRuntimeInitialized() {
-        console.log('[RUNNER] onRuntimeInitialized');
-        globalThis.nethackShimCallback = shimNode.nethackShimCallback;
-        this.ccall('shim_graphics_set_callback', null, ['string'], ['nethackShimCallback']);
-    },
-});
-
-console.log('[RUNNER] WASM module instantiated');
-
-// Give shim access to the module for malloc/UTF8 operations
-shimNode.setModule(mod);
-
-// ---- Start the game ----
-
-console.log('[RUNNER] Starting game main()...');
-const mainPromise = mod.ccall('main', 'number', ['number', 'string'], [0, ''], { async: true });
-mainPromise.then(() => {
-    console.log('[RUNNER] main() returned — game loop ended');
-    shimNode.shimState.done = true;
-}).catch((err) => {
-    console.log('[RUNNER] main() error:', err.message);
-    shimNode.shimState.done = true;
-});
-
-// ---- Wait for character creation ----
-
-console.log('[RUNNER] Waiting for character creation...');
-try {
-    await shimNode.waitForCondition(() => shimNode.shimState.dlvl !== '', 60000, 200);
-    console.log('[RUNNER] Character creation complete, dlvl=' + shimNode.shimState.dlvl);
-} catch (e) {
-    console.error('[RUNNER] Timeout waiting for character creation');
-    console.error('[RUNNER] State:', JSON.stringify({
-        dlvl: shimNode.shimState.dlvl,
-        hp: shimNode.shimState.hp,
-        msgs: shimNode.shimState.messages.slice(-5),
-        callbacks: shimNode.shimState.callback_call_count,
-    }));
-    process.exit(1);
-}
-
-// ---- Start nav-ai ----
-
-const startDlvl = shimNode.shimState.dlvl;
-const env = new NHNodeEnv(shimNode.shimState, shimNode.sendKey);
-
-console.log('[RUNNER] Starting nav-ai with startDlvl=' + startDlvl);
-
-startNavigation(startDlvl, (reason) => {
-    console.log(`[RUNNER] Navigation ended: ${reason}`);
-    const finalDlvl = shimNode.shimState.dlvl;
-    const lastMsgs = shimNode.shimState.messages.slice(-10);
-    console.log(`[RUNNER] Last messages: ${JSON.stringify(lastMsgs)}`);
-    if (finalDlvl !== startDlvl) {
-        console.log(`[RUNNER] SUCCESS: Descended from ${startDlvl} to ${finalDlvl}`);
-        process.exit(0);
-    } else if (reason === 'died' || reason === 'game-ended') {
-        console.log(`[RUNNER] Player died on level ${finalDlvl} (HP=${shimNode.shimState.hp}/${shimNode.shimState.maxHp})`);
+async function getModuleFactory() {
+    if (_moduleFactory) return _moduleFactory;
+    const nethackModuleUrl = `file://${WASM_JS}`;
+    const { default: ModuleFactory } = await import(nethackModuleUrl).catch(e => {
+        console.error('[RUNNER] Failed to load nethack.js:', e.message);
+        console.error('[RUNNER] Make sure you have built the WASM: make');
         process.exit(1);
-    } else {
-        console.log(`[RUNNER] Navigation stopped: ${reason}`);
-        process.exit(reason === 'stuck' ? 2 : 1);
-    }
-}, env);
-
-// ---- Keep event loop alive ----
-
-function drive() {
-    if (shimNode.shimState.done) {
-        console.log('[RUNNER] Game exited (shim_exit_nhwindows)');
-        process.exit(0);
-    }
-    setImmediate(drive);
+    });
+    _moduleFactory = ModuleFactory;
+    return ModuleFactory;
 }
-drive();
 
-// ---- Timeout ----
+async function runOneTrial(trialNum, totalTrials) {
+    shimNode.resetShimState();
 
-const TIMEOUT = 5 * 60 * 1000; // 5 minutes
-setTimeout(() => {
-    console.log(`[RUNNER] Timeout after ${TIMEOUT / 1000}s`);
-    console.log('[RUNNER] State:', JSON.stringify({
-        dlvl: shimNode.shimState.dlvl,
-        hp: shimNode.shimState.hp,
-        msgs: shimNode.shimState.messages.slice(-5),
-        callbacks: shimNode.shimState.callback_call_count,
-    }));
-    process.exit(124);
-}, TIMEOUT);
+    const mod = await (await getModuleFactory())({
+        noInitialRun: true,
+        arguments: ['nethack', '-D', 'notutorial'],
+        print: () => {},
+        printErr: () => {},
+        locateFile: (f) => (f === 'nethack.wasm' || f.endsWith('.wasm')) ? `file://${WASM_BIN}` : f,
+        onRuntimeInitialized() {
+            globalThis.nethackShimCallback = shimNode.nethackShimCallback;
+            this.ccall('shim_graphics_set_callback', null, ['string'], ['nethackShimCallback']);
+        },
+    });
+    shimNode.setModule(mod);
+
+    const mainPromise = mod.ccall('main', 'number', ['number', 'string'], [0, ''], { async: true });
+    mainPromise.then(() => { shimNode.shimState.done = true; })
+        .catch((err) => { console.log(`[RUNNER] Trial ${trialNum} main() error:`, err.message); shimNode.shimState.done = true; });
+
+    await shimNode.waitForCondition(() => shimNode.shimState.dlvl !== '', 60000, 200);
+    const startDlvl = shimNode.shimState.dlvl;
+    const env = new NHNodeEnv(shimNode.shimState, shimNode.sendKey);
+
+    return new Promise((resolve) => {
+        let resolved = false;
+        let timeoutId;
+
+        const onDone = (reason) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timeoutId);
+
+            const finalDlvl = shimNode.shimState.dlvl;
+            const lastMsgs = shimNode.shimState.messages
+                .filter(m => !m.includes('Do you want') && !m.includes('Shall I') && !m.includes('What do you want'))
+                .slice(-20);
+            const hpText = shimNode.shimState.hp;
+            const maxHpText = shimNode.shimState.maxHp;
+            const hp = hpText && maxHpText ? `${hpText}/${maxHpText}` : '?';
+
+            let code = 1;
+            if (finalDlvl !== startDlvl) code = 0;
+            else if (reason === 'stuck') code = 2;
+            else if (reason === 'max-ticks') code = 124;
+
+            console.log(`[SINGLE] trial=${trialNum}/${totalTrials} result=${reason} code=${code} hp=${hp} msgs=${JSON.stringify(lastMsgs)}`);
+            resolve({ reason, code, hp, lastMsgs });
+        };
+
+        startNavigation(startDlvl, onDone, env);
+
+        timeoutId = setTimeout(() => {
+            if (resolved) return;
+            resolved = true;
+            console.log(`[SINGLE] trial=${trialNum}/${totalTrials} result=max-ticks code=124`);
+            resolve({ reason: 'max-ticks', code: 124, hp: '?', lastMsgs: [] });
+        }, 5 * 60 * 1000);
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  WORKER MODE
+// ═══════════════════════════════════════════════════════════════════════════
+
+if (process.env.NH_WORKER === '1') {
+    await getModuleFactory();
+    if (process.send) process.send({ type: 'ready' });
+
+    process.on('message', async (msg) => {
+        if (msg.type === 'run') {
+            const result = await runOneTrial(msg.trialNum, msg.trialNum);
+            if (process.send) process.send({ type: 'result', result });
+        } else if (msg.type === 'exit') {
+            process.exit(0);
+        }
+    });
+
+    // Keep alive until 'exit' message
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SCHEDULER MODE
+// ═══════════════════════════════════════════════════════════════════════════
+
+else {
+    const max_tries = parseInt(process.argv[2], 10) || 1;
+    const concurrency = parseInt(process.argv[3], 10) || 4;
+
+    const results = { descended: 0, died: 0, 'game-ended': 0, stuck: 0, 'max-ticks': 0, other: 0 };
+    const details = [];
+
+    function createWorkerPool(size) {
+        const workers = [];
+        const readyPromises = [];
+        for (let i = 0; i < size; i++) {
+            const worker = fork(__filename, [], {
+                cwd: process.cwd(),
+                env: { ...process.env, NH_WORKER: '1' },
+                stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+            });
+            const ready = new Promise((resolve) => {
+                worker.once('message', (msg) => { if (msg.type === 'ready') resolve(); });
+            });
+            readyPromises.push(ready);
+            workers.push(worker);
+        }
+        return { workers, ready: Promise.all(readyPromises) };
+    }
+
+    console.log(`[RUNNER] Starting ${max_tries} trials with concurrency=${concurrency}...`);
+
+    const { workers, ready } = createWorkerPool(concurrency);
+    await ready;
+
+    let nextTrial = 1;
+    let completed = 0;
+
+    function assignNext(worker) {
+        if (nextTrial > max_tries) return;
+        const trialNum = nextTrial++;
+        const startTime = Date.now();
+
+        worker.once('message', (msg) => {
+            if (msg.type !== 'result') return;
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            const r = msg.result;
+
+            let reason = 'other';
+            if (r.code === 0) reason = 'descended';
+            else if (r.code === 1) {
+                if (r.reason === 'died' || r.reason === 'game-ended') reason = 'died';
+                else reason = 'other';
+            } else if (r.code === 2) reason = 'stuck';
+            else if (r.code === 124) reason = 'max-ticks';
+
+            const lastMsgs = (r.lastMsgs || []).slice(-5).map(m => m.slice(0, 100)).join(' | ');
+            details.push({ i: trialNum, reason, code: r.code, elapsed, hp: r.hp, lastMsgs: lastMsgs.slice(0, 120) });
+            results[reason] = (results[reason] || 0) + 1;
+            completed++;
+
+            process.stdout.write(`\r[RUNNER] ${completed}/${max_tries} — success=${results.descended} died=${results.died} stuck=${results.stuck} other=${results.other + results['game-ended'] + results['max-ticks']}`);
+            assignNext(worker);
+        });
+
+        worker.send({ type: 'run', trialNum });
+    }
+
+    for (const worker of workers) assignNext(worker);
+
+    await new Promise((resolve) => {
+        const check = () => { if (completed >= max_tries) resolve(); else setTimeout(check, 100); };
+        check();
+    });
+
+    // Shutdown workers
+    for (const worker of workers) {
+        worker.send({ type: 'exit' });
+    }
+
+    // Wait for all workers to actually exit (prevents zombie processes)
+    await Promise.all(workers.map(w => new Promise(r => w.on('exit', r))));
+
+    console.log('\n');
+    console.log('=== Results ===');
+    for (const [k, v] of Object.entries(results)) {
+        if (v > 0) console.log(`  ${k}: ${v}/${max_tries} (${(v / max_tries * 100).toFixed(1)}%)`);
+    }
+
+    const stuckRuns = details.filter(d => d.reason === 'stuck');
+    if (stuckRuns.length > 0) {
+        console.log('\n=== Stuck details ===');
+        for (const d of stuckRuns.slice(0, 10)) {
+            console.log(`  Run #${d.i}: code=${d.code} hp=${d.hp} msgs=${JSON.stringify(d.lastMsgs.slice(0, 120))}`);
+        }
+    }
+
+    const diedRuns = details.filter(d => d.reason === 'died');
+    if (diedRuns.length > 0) {
+        console.log('\n=== Died details (last 5) ===');
+        for (const d of diedRuns.slice(-5)) {
+            console.log(`  Run #${d.i}: hp=${d.hp} msgs=${JSON.stringify(d.lastMsgs.slice(0, 120))}`);
+        }
+    }
+
+    process.exit(0);
+}

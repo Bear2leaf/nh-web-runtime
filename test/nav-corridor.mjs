@@ -222,6 +222,15 @@
 
       // Pet blocking — try to swap places, but give up after too many swaps
       if (hadPetBlock) {
+        // Respect global pet swap throttle from nav-ai.mjs
+        if (navCtx.petSwapBlocked) {
+          console.log(`[NAV] Pet swap blocked globally, giving up on corridor handling`);
+          navCtx.petSwapConsecutive = 0;
+          corridorVisitCounts.clear();
+          navCtx.corridorOscillationTick = 0;
+          return false;
+        }
+
         // Track consecutive pet swap attempts
         if (!navCtx.petSwapConsecutive) navCtx.petSwapConsecutive = 0;
         navCtx.petSwapConsecutive++;
