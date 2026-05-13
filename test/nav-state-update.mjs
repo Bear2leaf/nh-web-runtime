@@ -73,7 +73,27 @@
     }
 
     // Detect pet blocking from recent messages
-    navCtx.hadPetBlock = navCtx.msgs.some(m => m.includes('is in the way') || m.includes('swap places with'));
+    const sawPetSwap = navCtx.msgs.some(m => m.includes('swap places with'));
+    const sawPetBlockMsg = navCtx.msgs.some(m => m.includes('is in the way'));
+    navCtx.hadPetBlock = sawPetSwap || sawPetBlockMsg;
+
+    // Track consecutive pet swaps — only increment on a FRESH swap event (not re-seeing old messages).
+    // Use lastSwapTick to detect new swaps: increment only if this is the first tick since the swap.
+    if (sawPetSwap) {
+      if (navCtx.lastSwapTick !== navCtx.tickCount - 1) {
+        // New swap event (not a re-seen old message)
+        navCtx.consecutivePetSwaps = (navCtx.consecutivePetSwaps || 0) + 1;
+      }
+      navCtx.lastSwapTick = navCtx.tickCount;
+    } else {
+      navCtx.consecutivePetSwaps = 0;
+      navCtx.lastSwapTick = -1;
+    }
+    // Block pet swaps after 4 consecutive swaps (pet keeps blocking the path)
+    navCtx.petSwapBlocked = navCtx.consecutivePetSwaps > 4;
+    if (navCtx.petSwapBlocked && navCtx.consecutivePetSwaps === 5) {
+      console.log(`[NAV] Blocking pet swaps after 5 consecutive swaps — pet is blocking the path`);
+    }
 
     // Track recent positions for oscillation detection
     navCtx.recentPositions.push({x: navCtx.player.x, y: navCtx.player.y});
@@ -154,6 +174,8 @@
     if (moved) {
       navCtx.stuckCount = 0;
       navCtx.doorAttemptCount = 0;
+      navCtx._stuckTargetTicks = 0;
+      navCtx._stuckTargetKey = null;
       // Clear lastStairsPos when player moves away — avoid stale reference
       if (navCtx.lastStairsPos &&
           (navCtx.player.x !== navCtx.lastStairsPos.x ||
@@ -183,6 +205,9 @@
       const noStairsOrDoors = !navCtx.stairs && navCtx.features &&
         (navCtx.features.doors.length === 0 ||
          (navCtx.triedDoors && navCtx.triedDoors.size >= navCtx.features.doors.length));
+      // If a corridor is visible, the room is not truly enclosed — corridor handler owns corridors
+      const corridorVisible = (navCtx.grid||'').some(row => row.includes('#'));
+      const hasTrueExits = !!navCtx.stairs || navCtx.features.doors.length > 0 || corridorVisible;
       const recentSearchCooldown = navCtx.searchCooldownTick > 0 &&
         navCtx.tickCount - navCtx.searchCooldownTick <= 10;
       const isEnclosed = noStairsOrDoors && !recentSearchCooldown && !navCtx.isInCorridor;
@@ -191,23 +216,30 @@
       if (isEnclosed) {
         navCtx.enclosedTick++;
       } else if (navCtx.isOscillating && !navCtx.isInCorridor) {
-        navCtx.enclosedTick += 0.5;
+        navCtx.enclosedTick += 0.2;  // reduced from 0.5 — oscillation alone shouldn't trigger wall search too quickly
       } else if (noStairsOrDoors && !navCtx.isInCorridor && !navCtx.wallSearchPhase) {
         navCtx.enclosedTick += 0.1;
       } else if (!navCtx.wallSearchPhase) {
         navCtx.enclosedTick = 0;
       }
 
+      // If corridors are visible, the player is not enclosed — reset enclosedTick
+      // so wall search doesn't accidentally trigger when corridors are the obvious exit
+      if (corridorVisible && !navCtx.wallSearchPhase) {
+        navCtx.enclosedTick = Math.max(0, navCtx.enclosedTick - 1);
+      }
+
       // Trigger wall search when enclosed for sustained period.
-      // Also trigger when heavily oscillating in a room — even with visible doors,
-      // the AI may be unable to reach them (locked doors, BFS path blocked).
+      // Increased thresholds to give door exploration more time to work.
+      // If corridors are visible on the map, the room has exits — corridor handler
+      // should explore them instead of wall search wasting ticks.
       const wallSearchSuppressed = navCtx.wallSearchSuppressUntilTick &&
                                    navCtx.tickCount < navCtx.wallSearchSuppressUntilTick;
-      if (!navCtx.wallSearchPhase && !navCtx.isInCorridor && !wallSearchSuppressed) {
-        const heavyOscillation = navCtx.isOscillating && navCtx.enclosedTick > 50 &&
+      if (!navCtx.wallSearchPhase && !navCtx.isInCorridor && !wallSearchSuppressed && !corridorVisible) {
+        const heavyOscillation = navCtx.isOscillating && navCtx.enclosedTick > 40 &&
                                  !navCtx.stairs;
-        if ((isEnclosed && navCtx.enclosedTick > 100) ||
-            (levelSearchTimeout && navCtx.enclosedTick > 40) ||
+        if ((isEnclosed && navCtx.enclosedTick > 200) ||
+            (levelSearchTimeout && navCtx.enclosedTick > 20) ||
             heavyOscillation) {
           navCtx.wallFollowPath = buildWallFollowPath(navCtx.player.x, navCtx.player.y, navCtx.grid);
           navCtx.wallFollowIdx = 0;

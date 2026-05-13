@@ -62,8 +62,64 @@
       isOscillating = posSet.size <= 4;
     }
 
-    // ---- BFS to unexplored areas ----
-    // Find the nearest walkable position adjacent to an unexplored boundary
+    // ---- CRITICAL: Navigate to untried doors FIRST ----
+    // Stairs are always in rooms. Each door potentially leads to a room with stairs.
+    // This is the MOST IMPORTANT step — must run before findNearestUnexplored.
+    if (!isInCorridor && features.doors.length > 0) {
+      let nearestUntriedDoor = null, nearestDoorDist = Infinity;
+      for (const door of features.doors) {
+        const key = door.x + ',' + door.y;
+        if (navCtx.triedDoors.has(key)) continue;
+        const dist = Math.abs(door.x - player.x) + Math.abs(door.y - player.y);
+        if (dist > 0 && dist < nearestDoorDist) {
+          nearestDoorDist = dist; nearestUntriedDoor = door;
+        }
+      }
+      if (nearestUntriedDoor) {
+        // Adjacent to door — open it
+        const ddx = nearestUntriedDoor.x - player.x;
+        const ddy = nearestUntriedDoor.y - player.y;
+        if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {
+          const idx = DIRS.findIndex(([ddx,ddy]) => ddx===ddx && ddy===ddy);
+          if (idx >= 0) {
+            const doorKey = nearestUntriedDoor.x + ',' + nearestUntriedDoor.y;
+            if (navCtx.triedDoors.has(doorKey)) return false;
+            console.log(`[NAV] Level-explore: opening untried door at ${doorKey}`);
+            env.sendKey('o'.charCodeAt(0));
+            navCtx.pendingDir = idx;
+            return true;
+          }
+        }
+        // Non-adjacent — BFS to it
+        const next = bfsAvoiding(player.x, player.y, nearestUntriedDoor.x, nearestUntriedDoor.y, grid, blocked, navCtx.openedDoors);
+        if (next) {
+          const nch = (grid[next.y]||'')[next.x] || ' ';
+          if (nch === '+') {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===(next.x-player.x) && ddy===(next.y-player.y));
+            if (idx >= 0) {
+              console.log(`[NAV] Level-explore: navigating to untried door at ${nearestUntriedDoor.x},${nearestUntriedDoor.y} and opening`);
+              env.sendKey('o'.charCodeAt(0));
+              navCtx.pendingDir = idx;
+              return true;
+            }
+          }
+          if (!PET_CHARS.has(nch)) {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===(next.x-player.x) && ddy===(next.y-player.y));
+            if (idx >= 0) {
+              navCtx.lastMoveDir = idx;
+              env.sendKey(KEY[idx].charCodeAt(0));
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    // ---- BFS to unexplored areas (fallback when no untried doors) ----
+    // Only search for unexplored boundaries after all doors have been tried.
+    // Capped BFS in findNearestUnexplored prevents chasing distant targets.
     const boundary = NH.findNearestUnexplored(grid, player.x, player.y);
     if (boundary) {
       const bch = (grid[boundary.y]||'')[boundary.x] || ' ';
@@ -110,20 +166,7 @@
       }
     }
 
-    // ---- Room exit exploration ----
-    // Find a corridor tile to navigate toward (to reach new rooms)
-    if (!isInCorridor && features.doors.length > 0) {
-      // Try going through a door
-      for (const door of features.doors) {
-        const ddx = door.x - player.x, ddy = door.y - player.y;
-        if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {
-          // Adjacent door — let handleDoors deal with it
-          return false;
-        }
-      }
-    }
-
-    // ---- Corridor/room navigation ----
+    // ---- Corridor/room navigation (when no untried doors) ----
     // Navigate to nearest corridor tile to enter corridor network
     if (!isInCorridor) {
       let bestCorridor = null, bestDist = Infinity;
@@ -153,42 +196,6 @@
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0 && !navCtx.triedDoors.has(next.x + ',' + next.y)) {
               console.log(`[NAV] Level-explore (corridor): opening door at ${next.x},${next.y}`);
-              env.sendKey('o'.charCodeAt(0));
-              navCtx.pendingDir = idx;
-              return true;
-            }
-          }
-          if (!PET_CHARS.has(nch)) {
-            const idx = DIRS.findIndex(([ddx,ddy]) =>
-              ddx===(next.x-player.x) && ddy===(next.y-player.y));
-            if (idx >= 0) {
-              navCtx.lastMoveDir = idx;
-              env.sendKey(KEY[idx].charCodeAt(0));
-              return true;
-            }
-          }
-        }
-      }
-    }
-
-    // ---- No corridors visible but doors are visible: navigate to nearest door ----
-    if (!isInCorridor && features && features.doors && features.doors.length > 0) {
-      let nearestDoor = null, doorDist = Infinity;
-      for (const door of features.doors) {
-        if (navCtx.triedDoors && navCtx.triedDoors.has(door.x + ',' + door.y)) continue;
-        const dist = Math.abs(door.x - player.x) + Math.abs(door.y - player.y);
-        if (dist > 0 && dist < doorDist) { doorDist = dist; nearestDoor = door; }
-      }
-      if (nearestDoor) {
-        const next = bfsAvoiding(player.x, player.y, nearestDoor.x, nearestDoor.y, grid, blocked, navCtx.openedDoors);
-        if (next) {
-          const nch = (grid[next.y]||'')[next.x] || ' ';
-          // If next step IS the door, open it
-          if (nch === '+') {
-            const idx = DIRS.findIndex(([ddx,ddy]) =>
-              ddx===(next.x-player.x) && ddy===(next.y-player.y));
-            if (idx >= 0) {
-              console.log(`[NAV] Level-explore (door target): opening door at ${next.x},${next.y}`);
               env.sendKey('o'.charCodeAt(0));
               navCtx.pendingDir = idx;
               return true;

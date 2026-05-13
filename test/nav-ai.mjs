@@ -18,7 +18,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-ai.mjs'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, isWalkable, shuffleDirs,
+  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, shuffleDirs,
           tryTeleport, MAX_TELEPORT_ATTEMPTS } = NH;
 
   // Use setTimeout(0) in browser to yield to WASM input processing;
@@ -200,19 +200,78 @@
         navCtx.lastWaitingHitTick = navCtx.tickCount;
         console.log(`[NAV] Hidden monster detected (waiting to get hit) at tick=${navCtx.tickCount}`);
         const shuffled = shuffleDirs();
+        // Prefer safe directions (no monsters, no known traps)
         for (const di of shuffled) {
           const [dx, dy] = DIRS[di];
           const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (navCtx.grid[ny]||'')[nx] || ' ';
-          if (isWalkable(ch) && !MONSTERS.has(ch)) {
+          const trapKey = nx + ',' + ny;
+          if (isWalkable(ch) && !MONSTERS.has(ch) && !navCtx.knownTrapPositions.has(trapKey)) {
             navCtx.lastMoveDir = di;
             navCtx.env.sendKey(KEY[di].charCodeAt(0));
             return true;
           }
         }
-        // All directions blocked — fight in a random direction
-        navCtx.env.sendKey(KEY[shuffled[0]].charCodeAt(0));
+        // All safe directions blocked — try to swap with pet, open door, or search
+        for (const di of shuffled) {
+          const [dx, dy] = DIRS[di];
+          const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+          if (PET_CHARS.has(ch)) {
+            // Swap with pet — might let us move past it
+            navCtx.lastMoveDir = di;
+            navCtx.env.sendKey(KEY[di].charCodeAt(0));
+            return true;
+          }
+          if (ch === '+') {
+            // Open door — might reveal or escape the monster
+            navCtx.env.sendKey('o'.charCodeAt(0));
+            navCtx.pendingDir = di;
+            return true;
+          }
+        }
+        // Truly trapped — first search to reveal, then attack if search keeps happening
+        navCtx.hiddenMonsterSearchCount = (navCtx.hiddenMonsterSearchCount || 0) + 1;
+        if (navCtx.hiddenMonsterSearchCount > 3) {
+          // Searched enough — try fighting in a random direction. 'F' prefix forces fight.
+          navCtx.hiddenMonsterSearchCount = 0;
+          const rndDir = Math.floor(Math.random() * 8);
+          console.log(`[NAV] Search not revealing monster — attacking in direction ${rndDir} at tick=${navCtx.tickCount}`);
+          navCtx.env.sendKey('F'.charCodeAt(0));
+          navCtx.pendingDir = rndDir;
+          return true;
+        }
+        navCtx.env.sendKey('s'.charCodeAt(0));
+        return true;
+      }
+
+      // ---- Stairs rush: if stairs are visible and close, run to them instead of fighting ----
+      // Getting to stairs is the primary goal. Adjacent monsters can be ignored if
+      // stairs are within reach — descending ends all combat immediately.
+      if (navCtx.stairs && !navCtx.lowHp) {
+        const sDist = Math.abs(navCtx.stairs.x - navCtx.player.x) +
+                      Math.abs(navCtx.stairs.y - navCtx.player.y);
+        if (sDist <= 5) {
+          if (NH.handleStairs && NH.handleStairs(navCtx)) return true;
+        }
+      }
+
+      // ---- Combat: adjacent monster — ALWAYS before food (getting bitten is worse than starving) ----
+      if (NH.handleCombat && NH.handleCombat(navCtx)) return true;
+
+      // ---- Pet swap throttle: if too many consecutive swaps, wait to let pet move ----
+      // This prevents infinite swap loops where player and pet keep exchanging positions.
+      // Skip when stairs visible, low HP, or hungry — these trump pet avoidance.
+      if (navCtx.petSwapBlocked && !navCtx.stairs && !navCtx.lowHp && !navCtx.isHungryCombined) {
+        // Decay: each wait reduces the counter, eventually allowing swaps again
+        navCtx.consecutivePetSwaps -= 2;
+        if (navCtx.consecutivePetSwaps <= 0) {
+          navCtx.consecutivePetSwaps = 0;
+          navCtx.petSwapBlocked = false;
+        }
+        navCtx.env.sendKey('.'.charCodeAt(0));
         return true;
       }
 
@@ -221,9 +280,6 @@
 
       // ---- HP / hunger / eating from inventory ----
       if (NH.handleHpHunger && NH.handleHpHunger(navCtx)) return true;
-
-      // ---- Combat: adjacent monster ----
-      if (NH.handleCombat && NH.handleCombat(navCtx)) return true;
 
       // ---- Stuck recovery ----
       if (NH.handleStuck && NH.handleStuck(navCtx)) return true;
@@ -261,11 +317,13 @@
       // ---- Boulder / Pet blocking (before corridor, so pet swap gets priority) ----
       if (NH.handleBoulderPet && NH.handleBoulderPet(navCtx)) return true;
 
-      // ---- Level exploration (no stairs visible) ----
-      if (NH.handleLevelExplore && NH.handleLevelExplore(navCtx)) return true;
-
-      // ---- Door navigation: open/kick visible doors ----
+      // ---- Door navigation: open/kick visible doors (BEFORE level explore) ----
+      // Stairs are always in rooms; doors lead to rooms. Prioritize opening doors
+      // over generic boundary exploration since each opened door may lead to stairs.
       if (NH.handleDoors && NH.handleDoors(navCtx)) return true;
+
+      // ---- Level exploration (no stairs visible, no untried doors) ----
+      if (NH.handleLevelExplore && NH.handleLevelExplore(navCtx)) return true;
 
       // ---- Corridor navigation ----
       if (NH.handleCorridor && NH.handleCorridor(navCtx)) return true;
@@ -275,6 +333,10 @@
 
       // ---- Wall search / perimeter walking ----
       if (NH.handleWallSearch && NH.handleWallSearch(navCtx)) return true;
+      // Wall search didn't consume tick — log why once per 500 ticks
+      if (navCtx.tickCount % 500 === 0 && !navCtx.wallSearchPhase) {
+        console.log(`[NAV] Wall search skipped: wallSearchPhase=${navCtx.wallSearchPhase} enclosed=${navCtx.enclosedTick.toFixed(1)} tick=${navCtx.tickCount}`);
+      }
 
       // ---- Hard stuck timeout teleport ----
       if (navCtx.stuckCount > 500 && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {

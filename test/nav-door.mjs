@@ -26,9 +26,18 @@
   function handleDoors(navCtx) {
     const { env, player, grid, features, triedDoors, legInjured } = navCtx;
 
-    // When wall search is active, let wall search handle navigation.
-    // Opening doors during wall search can interfere with perimeter walking.
-    if (navCtx.wallSearchPhase) return false;
+    // During wall search, let the wall search handler deal with navigation to distant
+    // doors. But we ALWAYS handle adjacent doors — stuck + locked door + pet blocking
+    // can deadlock if we defer to wall search here (wall search can't unstick).
+    const isWallSearchActive = navCtx.wallSearchPhase;
+    if (isWallSearchActive) {
+      // Check if any door is adjacent — if so, handle it immediately
+      const adjDoor = features.doors.find(d => {
+        const ddx = d.x - player.x, ddy = d.y - player.y;
+        return Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1;
+      });
+      if (!adjDoor) return false; // Defer to wall search for non-adjacent doors
+    }
 
     if (!navCtx.kickAttempts) navCtx.kickAttempts = new Map();
 
@@ -38,9 +47,33 @@
       // Also skip doors where we've exhausted kick attempts
       const kicks = navCtx.kickAttempts.get(key) || 0;
       if (kicks >= MAX_KICK_ATTEMPTS) return false;
+      // During wall search, only consider adjacent doors
+      if (isWallSearchActive) {
+        const ddx = d.x - player.x, ddy = d.y - player.y;
+        if (Math.abs(ddx) > 1 || Math.abs(ddy) > 1) return false;
+      }
       return true;
     });
     if (untriedDoors.length === 0) return false;
+
+    // Track consecutive failed attempts at the same door — if pet or monster keeps
+    // blocking the same door for many ticks, give up and let teleport/unexplore run.
+    const doorFailKey = untriedDoors[0] ? (untriedDoors[0].x + ',' + untriedDoors[0].y) : null;
+    if (doorFailKey) {
+      if (navCtx._lastDoorFailKey === doorFailKey) {
+        navCtx._doorFailCount = (navCtx._doorFailCount || 0) + 1;
+        if (navCtx._doorFailCount > 10) {
+          triedDoors.add(doorFailKey);
+          console.log(`[NAV] Door ${doorFailKey} blocked too long, marking as tried`);
+          navCtx._doorFailCount = 0;
+          navCtx._lastDoorFailKey = null;
+          return false; // Let other handlers try something else
+        }
+      } else {
+        navCtx._lastDoorFailKey = doorFailKey;
+        navCtx._doorFailCount = 1;
+      }
+    }
 
     let bestDoor = null, bestNext = null, bestDist = Infinity;
 

@@ -199,11 +199,14 @@
     const revisits = corridorVisitCounts.get(cKey) || 0;
 
     // ---- Oscillation detection ----
+    // Only flag genuine oscillation (1-2 unique tiles in 8 ticks). Narrow
+    // corridors naturally have few reachable positions — don't mistake normal
+    // corridor traversal for oscillation.
     let corridorOsc = false;
     if (recentPositions.length >= 8) {
       const posSet = new Set();
       for (const p of recentPositions) posSet.add(p.x + ',' + p.y);
-      if (posSet.size <= 4) corridorOsc = true;
+      if (posSet.size <= 2) corridorOsc = true;
     }
     const overVisited = revisits >= 3;
 

@@ -30,17 +30,19 @@
     // updateMapAndState() in nav-ai.mjs (before handlers run). This ensures the
     // logic always executes even when higher-priority handlers would consume the tick.
 
-    // If player is hungry (not just weak/fainting), bail out of wall search
-    // so the food handler can eat from inventory before starving
+    // If player is hungry/weak/fainting/fainted, bail out of wall search
+    // so the food handler can eat from inventory before starving.
+    // "Hungry" is mild but if there's no food on the map, we need to try other strategies
+    // (stairs, corridors, teleport) instead of starving in wall search.
     if (navCtx.wallSearchPhase) {
       const hungerText = (env.getHunger() || '').trim();
       const isHungry = hungerText === 'Hungry' || hungerText === 'Weak' ||
-                       hungerText === 'Fainting' || hungerText === 'Fainted';
+                      hungerText === 'Fainting' || hungerText === 'Fainted';
       const noFood = navCtx.msgs.some(m => m.includes("don't have anything to eat"));
-      if (isHungry) {
+      if (isHungry && (hungerText !== 'Hungry' || noFood || !navCtx.foodTarget)) {
         navCtx.wallSearchPhase = false;
-        navCtx.wallSearchSuppressUntilTick = tickCount + 2000;
-        console.log(`[NAV] Exiting wall search — hungry="${hungerText}" noFood=${noFood}, suppressing re-entry for 2000 ticks`);
+        navCtx.wallSearchSuppressUntilTick = tickCount + 300;
+        console.log(`[NAV] Exiting wall search — hunger="${hungerText}" noFood=${noFood} foodTarget=${navCtx.foodTarget?navCtx.foodTarget.x+','+navCtx.foodTarget.y:'null'}, suppressing re-entry for 300 ticks`);
         return false;
       }
     }
@@ -136,7 +138,7 @@
       navCtx.corridorFailCount = Math.max(navCtx.corridorFailCount + 1, 5);
       // Suppress re-triggering wall search for ~300 ticks — give corridor force-forward
       // a chance to actually escape the area.
-      navCtx.wallSearchSuppressUntilTick = tickCount + 2000;
+      navCtx.wallSearchSuppressUntilTick = tickCount + 300;
       console.log(`[NAV] Wall search gave up (${ratio|0}% searched). Trying corridors. corridorFailCount=${navCtx.corridorFailCount}`);
       return true;
     }
@@ -168,6 +170,25 @@
       if (navCtx.wallFollowIdx < navCtx.wallFollowPath.length) {
         const target = navCtx.wallFollowPath[navCtx.wallFollowIdx];
 
+        // Track how long we've been trying to reach this target.
+        // If stuck for too long (trap blocking, pet cycling), skip it.
+        const targetKey = target.x + ',' + target.y;
+        if (navCtx._stuckTargetKey === targetKey) {
+          navCtx._stuckTargetTicks++;
+          if (navCtx._stuckTargetTicks > 30) {
+            navCtx.searchedWallPos.add(targetKey);
+            navCtx.wallFollowIdx++;
+            navCtx._stuckTargetTicks = 0;
+            navCtx._stuckTargetKey = null;
+            navCtx.wallFollowTargetRetries = 0;
+            console.log(`[NAV] Wall search target ${targetKey} unreachable after 30 ticks, skipping`);
+            return true;
+          }
+        } else {
+          navCtx._stuckTargetKey = targetKey;
+          navCtx._stuckTargetTicks = 0;
+        }
+
         // At target — search
         if (target.x === player.x && target.y === player.y) {
           navCtx.searchedWallPos.add(curKey);
@@ -177,12 +198,16 @@
           navCtx.lastSearchTick = tickCount;
           navCtx.wallFollowIdx++;
           navCtx.wallFollowTargetRetries = 0;
+          navCtx._stuckTargetTicks = 0;
           env.sendKey('s'.charCodeAt(0));
           return true;
         }
 
-        // Navigate to target
-        const next = bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
+        // Navigate to target — use bfsAvoiding to skip known traps
+        const blocked = navCtx.knownTrapPositions || new Set();
+        const next = NH.bfsAvoiding
+          ? NH.bfsAvoiding(player.x, player.y, target.x, target.y, grid, blocked, navCtx.openedDoors)
+          : bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
         if (next) {
           const nextCh = (grid[next.y]||'')[next.x] || ' ';
 
@@ -277,9 +302,12 @@
 
     // Post-search navigation to revealed features
     if (navCtx.lastSearchTick > 0 && tickCount === navCtx.lastSearchTick + 1 && features) {
+      const blocked = navCtx.knownTrapPositions || new Set();
       if (features.stairsDown.length > 0) {
         const s = features.stairsDown[0];
-        const n = bfs(player.x, player.y, s.x, s.y, grid, navCtx.openedDoors);
+        const n = NH.bfsAvoiding
+          ? NH.bfsAvoiding(player.x, player.y, s.x, s.y, grid, blocked, navCtx.openedDoors)
+          : bfs(player.x, player.y, s.x, s.y, grid, navCtx.openedDoors);
         if (n) {
           const idx = DIRS.findIndex(([ddx,ddy]) =>
             ddx===(n.x-player.x) && ddy===(n.y-player.y));
@@ -293,7 +321,9 @@
           if (dist < bestDist) { bestDist = dist; bestDoor = door; }
         }
         if (bestDoor) {
-          const n = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid, navCtx.openedDoors);
+          const n = NH.bfsAvoiding
+            ? NH.bfsAvoiding(player.x, player.y, bestDoor.x, bestDoor.y, grid, blocked, navCtx.openedDoors)
+            : bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid, navCtx.openedDoors);
           if (n) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(n.x-player.x) && ddy===(n.y-player.y));
@@ -306,7 +336,10 @@
     // Fallback: move toward nearest unsearched wall position
     const target = findNearestUnsearchedWall(player.x, player.y, grid, navCtx.searchedWallPos);
     if (target) {
-      const next = bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
+      const blocked = navCtx.knownTrapPositions || new Set();
+      const next = NH.bfsAvoiding
+        ? NH.bfsAvoiding(player.x, player.y, target.x, target.y, grid, blocked, navCtx.openedDoors)
+        : bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
       if (next) {
         const idx = DIRS.findIndex(([ddx,ddy]) =>
           ddx===(next.x-player.x) && ddy===(next.y-player.y));
@@ -314,14 +347,18 @@
       }
     }
 
-    // Final fallback: random walkable direction
+    // Final fallback: random walkable direction (avoid known traps)
+    const trapSet = navCtx.knownTrapPositions || new Set();
     const shuffled = shuffleDirs();
     for (const di of shuffled) {
       const [ddx, ddy] = DIRS[di];
       const nx = player.x + ddx, ny = player.y + ddy;
       if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
         const ch = (grid[ny]||'')[nx] || ' ';
-        if (isWalkable(ch)) { env.sendKey(KEY[di].charCodeAt(0)); return true; }
+        if (isWalkable(ch) && !trapSet.has(nx + ',' + ny)) {
+          env.sendKey(KEY[di].charCodeAt(0));
+          return true;
+        }
       }
     }
 

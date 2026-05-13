@@ -17,12 +17,14 @@
   function isWalkable(ch) {
     if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) return false;
     if (ch === '|' || ch === '-' || ch === ' ' || ch === '`') return false;
+    if (ch === "'" || ch === '"') return false; // room walls
     if (ch === '^') return false; // known traps
     return true;
   }
 
   function isBfsWalkable(ch) {
     if (ch === '|' || ch === '-' || ch === ' ') return false;
+    if (ch === "'" || ch === '"') return false; // room walls
     if (ch === '#') return true; // corridors are walkable
     if (ch === '^') return false; // known traps
     return true;
@@ -92,7 +94,8 @@
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
-        if (!isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
+        if (!(nx === tx && ny === ty) &&
+            !isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
         if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
         if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
         visited[ny][nx] = 1;
@@ -124,7 +127,8 @@
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
-        if (!isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
+        if (!(nx === tx && ny === ty) &&
+            !isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
         // Skip monsters (but allow target if it's a monster — we'll attack it)
         if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
         visited[ny][nx] = 1;
@@ -134,6 +138,13 @@
     }
     return null;
   }
+
+  /**
+   * Find the nearest walkable tile adjacent to an unexplored boundary.
+   * BFS is capped at MAX_BFS_NODES nodes to avoid chasing distant unexplored
+   * tiles when nearby doors might lead to rooms with stairs.
+   */
+  const MAX_BFS_NODES = 500;
 
   function findNearestUnexplored(grid, px, py) {
     const visited = Array.from({length: H}, () => new Uint8Array(W));
@@ -146,8 +157,11 @@
       for (let x = 0; x < W; x++)
         if (isBfsWalkable((grid[y]||'')[x] || ' ')) seen[y][x] = 1;
 
+    let nodesExplored = 0;
     while (head < queue.length) {
       const cur = queue[head++];
+      nodesExplored++;
+      // Check for boundary: adjacent to an unseen tile
       for (const [dx, dy] of DIRS) {
         const nx = cur.x + dx, ny = cur.y + dy;
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
@@ -161,6 +175,8 @@
           return step;
         }
       }
+      // Cap BFS expansion to avoid chasing very distant boundaries
+      if (nodesExplored >= MAX_BFS_NODES) break;
       for (const [dx, dy] of DIRS) {
         const nx = cur.x + dx, ny = cur.y + dy;
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;

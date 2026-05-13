@@ -90,22 +90,81 @@
    */
   function handleFood(navCtx) {
     const { env, player, grid, tickCount, msgs, stuckCount,
-            knownTrapPositions, lastMoveDir } = navCtx;
+            knownTrapPositions, lastMoveDir, isInCorridor, wallSearchPhase } = navCtx;
 
     const hungerText = env.getHunger();
     const hungerTrimmed = (hungerText || '').trim();
     const isHungry = hungerTrimmed === 'Hungry' || hungerTrimmed === 'Weak' ||
                      hungerTrimmed === 'Fainting' || hungerTrimmed === 'Fainted';
-    const isFainted = hungerTrimmed === 'Fainted' || hungerTrimmed === 'Fainting';
+    const isFainting = hungerTrimmed === 'Fainting';
+    const isFainted = hungerTrimmed === 'Fainted';
 
-    // If fainted, just wait for recovery
-    if (isFainted) {
+    const nearestFood = findNearestFood(navCtx, player.x, player.y, grid);
+    const noFood = msgs.some(m => m.includes("don't have anything to eat"));
+
+    // Detect food at the player's feet from messages.
+    // When standing on food (e.g. "You see here a lichen corpse"), the food character
+    // is hidden under the player '@' on the map. The food scanner won't see it.
+    // But the message buffer tells us it's there — eat it immediately.
+    // Also catch pet-drop messages like "The little dog drops a lichen corpse".
+    const floorFoodMsg = msgs.some(m => {
+      const ml = m.toLowerCase();
+      // "You see here ..." — food is on our tile
+      if (ml.includes('you see here') &&
+          (ml.includes('corpse') || ml.includes('food') ||
+           ml.includes('apple') || ml.includes('banana') ||
+           ml.includes('carrot') || ml.includes('egg') ||
+           ml.includes('lump') || ml.includes('ration') ||
+           ml.includes('tripe'))) return true;
+      // Pet drops food on our tile: "The little dog drops a lichen corpse"
+      if ((ml.includes('drops') || ml.includes('drops a') || ml.includes('drops the')) &&
+          (ml.includes('corpse') || ml.includes('food')) &&
+          ml.includes('you')) return true; // "drops it at your feet" variant
+      return false;
+    });
+
+    // Fainting = LAST TICK before unconsciousness. Must eat NOW.
+    // No cooldown, no waiting. But don't spam 'e' if we already got "no food" message.
+    if (isFainting) {
+      if (!navCtx.choked && !noFood) {
+        navCtx.lastEatTick = tickCount;
+        console.log('[NAV] FAINTING — eating immediately (last chance before unconsciousness)');
+        env.sendKey('e'.charCodeAt(0));
+        return true;
+      }
+      // No food available or choked — wait for Fainted state
       env.sendKey('.'.charCodeAt(0));
       return true;
     }
 
-    const nearestFood = findNearestFood(navCtx, player.x, player.y, grid);
-    const noFood = msgs.some(m => m.includes("don't have anything to eat"));
+    // Fainted = unconscious. NetHack ignores all input keys.
+    // Send 'e' anyway on the hope that the player JUST recovered this tick,
+    // so the eat command processes before the pet re-grabs the food.
+    // But only try every few ticks to avoid spamming.
+    if (isFainted) {
+      if (!navCtx.choked && (tickCount - navCtx.lastEatTick) > 3) {
+        navCtx.lastEatTick = tickCount;
+        console.log('[NAV] FAINTED — sending eat key in case just recovered');
+        env.sendKey('e'.charCodeAt(0));
+        return true;
+      }
+      env.sendKey('.'.charCodeAt(0));
+      return true;
+    }
+
+    // Food at our feet (from "You see here a ... corpse" message) — eat it directly.
+    // The food char is hidden under the player '@', so the map scanner misses it,
+    // but we can still eat from the floor. Only eat when HUNGRY — eating when Satiated
+    // triggers the choking mechanic and kills the player.
+    // NO eat cooldown for floor food — the food might be picked up by the pet at any
+    // moment, so we need to eat immediately when detected.
+    if (floorFoodMsg && isHungry && !navCtx.choked) {
+      navCtx.lastEatTick = tickCount;
+      navCtx.choked = false;
+      console.log('[NAV] Eating food at feet (from "You see here" msg)');
+      env.sendKey('e'.charCodeAt(0));
+      return true;
+    }
 
     // Track sticky food target
     if (nearestFood) {
@@ -140,58 +199,127 @@
         }
       }
 
-      // If stuck approaching food, bail out and let other handlers deal with it
-      if (stuckCount > 3) {
+      // If stuck approaching food, bail out and let other handlers deal with it.
+      // BUT: always keep trying when hungry (any dist) or when food is close (dist <= 8).
+      // Without these exceptions, the player starves when stuckCount > 3 blocks
+      // food navigation and corridor oscillation takes over.
+      if (stuckCount > 3 && !(isHungry || foodDist <= 8)) {
         return false;
       }
 
-      // If hungry, navigate to food and eat when we get there.
-      // But: if there are visible untried doors and no stairs, limit to nearby food
-      // (dist <= 5) so we don't oscillate between far-away food while ignoring doors.
-      const features = scanMap(grid);
-      const hasUntriedDoors = features.doors.some(d => {
-        const key = d.x + ',' + d.y;
-        return !(navCtx.triedDoors && navCtx.triedDoors.has(key));
-      });
-      const shouldNavigateToFood = isHungry && (!hasUntriedDoors || foodDist <= 5);
+      // If hungry, navigate to food. When hungry, ignore the door/foodDist tradeoff
+      // — starving to death is worse than missing a door. When not hungry, only
+      // approach nearby food (dist <= 5) to avoid oscillating far from doors.
+      // We DO navigate to food during wall search when hungry — otherwise the
+      // pet steals the food before wall search exits on critical hunger.
+      const shouldNavigateToFood = isHungry;
       if (shouldNavigateToFood) {
         const blocked = knownTrapPositions || new Set();
         const next = bfsAvoiding(player.x, player.y, nearestFood.x, nearestFood.y, grid, blocked);
         if (next) {
-          const idx = DIRS.findIndex(([ddx,ddy]) =>
-            ddx===(next.x-player.x) && ddy===(next.y-player.y));
-          if (idx >= 0) {
-            console.log(`[NAV] Navigating to food at ${nearestFood.x},${nearestFood.y} (hungry, dist=${foodDist})`);
-            navCtx.lastMoveDir = idx;
-            env.sendKey(KEY[idx].charCodeAt(0));
-            return true;
+          const stepDx = next.x - player.x;
+          const stepDy = next.y - player.y;
+          const isDiag = Math.abs(stepDx) === 1 && Math.abs(stepDy) === 1;
+          let diagBlocked = false;
+          if (isDiag && isInCorridor) {
+            diagBlocked = true; // corridor diagonal almost always hits wall corner
+          } else if (isDiag) {
+            const ch1 = (grid[player.y]||'')[player.x + stepDx] || ' ';
+            const ch2 = (grid[player.y + stepDy]||'')[player.x] || ' ';
+            if (!isBfsWalkable(ch1) && !isBfsWalkable(ch2)) {
+              diagBlocked = true;
+            }
+          }
+          if (!diagBlocked) {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===stepDx && ddy===stepDy);
+            if (idx >= 0) {
+              console.log(`[NAV] Navigating to food at ${nearestFood.x},${nearestFood.y} (hungry, dist=${foodDist})`);
+              navCtx.lastMoveDir = idx;
+              env.sendKey(KEY[idx].charCodeAt(0));
+              return true;
+            }
           }
         }
       }
 
-      // Not hungry but food is nearby (dist <= 5) → navigate to pick it up for later
-      if (!isHungry && foodDist <= 5 && stuckCount === 0) {
+      // Not hungry but food is nearby → navigate to pick it up for later
+      // Skip during wall search — escaping the room is more important
+      // Skip when in corridor — corridor handler should explore instead
+      // Diagonal moves in corridors are usually wall-cornering attempts; only approach in rooms
+      const isDiagonalMove = (Math.abs(nearestFood.x - player.x) === 1 &&
+                               Math.abs(nearestFood.y - player.y) === 1);
+      const shouldApproachFood = (!isHungry && foodDist <= 8 && !navCtx.wallSearchPhase && !isInCorridor) ||
+                               (isHungry && foodDist > 8);
+      if (shouldApproachFood) {
         const blocked = knownTrapPositions || new Set();
         const next = bfsAvoiding(player.x, player.y, nearestFood.x, nearestFood.y, grid, blocked);
         if (next) {
-          const idx = DIRS.findIndex(([ddx,ddy]) =>
-            ddx===(next.x-player.x) && ddy===(next.y-player.y));
-          if (idx >= 0) {
-            console.log(`[NAV] Approaching food at ${nearestFood.x},${nearestFood.y} for pickup (dist=${foodDist})`);
-            navCtx.lastMoveDir = idx;
-            env.sendKey(KEY[idx].charCodeAt(0));
-            return true;
+          // Reject diagonal steps that would go through a wall corner.
+          // In corridors (1-tile-wide), diagonal into room wall = wall corner = blocked.
+          // Only reject diagonal if one of the cardinal-adjacent tiles is a wall.
+          const stepDx = next.x - player.x;
+          const stepDy = next.y - player.y;
+          const isDiag = Math.abs(stepDx) === 1 && Math.abs(stepDy) === 1;
+          if (isDiag && isInCorridor) {
+            // In corridor, diagonal almost always hits a wall corner — skip to let corridor handler run
+            shouldApproachFood = false;
+          } else if (isDiag) {
+            // In room, verify both cardinal-adjacent tiles are walkable
+            const ch1 = (grid[player.y]||'')[player.x + stepDx] || ' ';
+            const ch2 = (grid[player.y + stepDy]||'')[player.x] || ' ';
+            if (!isBfsWalkable(ch1) && !isBfsWalkable(ch2)) {
+              shouldApproachFood = false;
+            }
+          }
+          if (shouldApproachFood) {
+            const idx = DIRS.findIndex(([ddx,ddy]) =>
+              ddx===stepDx && ddy===stepDy);
+            if (idx >= 0) {
+              console.log(`[NAV] Approaching food at ${nearestFood.x},${nearestFood.y} (dist=${foodDist}, hungry=${isHungry})`);
+              navCtx.lastMoveDir = idx;
+              env.sendKey(KEY[idx].charCodeAt(0));
+              return true;
+            }
           }
         }
       }
     }
 
-    // Hungry but no floor food — try eating from inventory
-    if (isHungry && !noFood && (tickCount - navCtx.lastEatTick) > 5) {
+    // Hungry but no floor food — try eating from inventory.
+    // Only eat when truly starving (Weak/Fainting), not just mild Hunger.
+    // This avoids eating rotten corpses from inventory (which cause sickness).
+    const isStarving = hungerTrimmed === 'Weak' || hungerTrimmed === 'Fainting' ||
+                       hungerTrimmed === 'Fainted';
+    if (isHungry && isStarving && !noFood && (tickCount - navCtx.lastEatTick) > 5) {
       navCtx.lastEatTick = tickCount;
-      console.log('[NAV] Trying to eat from inventory (hungry)');
+      console.log(`[NAV] Trying to eat from inventory (status=${hungerTrimmed})`);
       env.sendKey('e'.charCodeAt(0));
       return true;
+    }
+
+    // Starving with no food at all — try prayer as last resort.
+    // In NetHack, praying while starving can produce food from your god.
+    // Only try once every ~1000 ticks to avoid angering the god.
+    if (isHungry && noFood && !nearestFood && (tickCount - (navCtx.lastPrayTick || -1000)) > 1000) {
+      navCtx.lastPrayTick = tickCount;
+      // No pendingPray needed — just send the full prayer sequence directly.
+      // NetHack extended command: #pray followed by <CR>
+      console.log(`[NAV] Starving with no food (hungry="${hungerTrimmed}") — attempting prayer at tick=${tickCount}`);
+      env.sendKey('#'.charCodeAt(0));
+      env.sendKey('p'.charCodeAt(0));
+      env.sendKey('r'.charCodeAt(0));
+      env.sendKey('a'.charCodeAt(0));
+      env.sendKey('y'.charCodeAt(0));
+      env.sendKey(13); // Enter key
+      return true;
+    }
+
+    // No food on map AND no food in inventory — try to descend to find food.
+    // Return false so the stairs handler can run instead of blocking with no-op.
+    if (isHungry && noFood && !nearestFood && tickCount > 10) {
+      console.log(`[NAV] No food available (hungry="${hungerTrimmed}") — yielding to stairs/corridor handlers`);
+      return false;
     }
 
     // No food at all — reset noFood flag periodically

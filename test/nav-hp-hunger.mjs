@@ -28,19 +28,39 @@
     const hungerText = env.getHunger();
     const hungerTrimmed = (hungerText || '').trim();
 
-    // ---- Fainted or Fainting: unconscious or about to faint, can't act.
-    // Just advance time until recovery ----
-    if (hungerTrimmed === 'Fainted' || hungerTrimmed === 'Fainting') {
+    // SATIATED: never eat — choking will kill us. Just keep navigating.
+    if (hungerTrimmed === 'Satiated') return false;
+
+    // Fainting = LAST TICK before unconsciousness. Eat immediately, no cooldown.
+    // This is critical — if we let the player slip into Fainted, NetHack ignores 'e'.
+    // But don't spam 'e' if we already got "no food" message.
+    const noFood = msgs.some(m => m.includes("don't have anything to eat"));
+    if (hungerTrimmed === 'Fainting') {
+      if (!navCtx.choked && !noFood) {
+        navCtx.lastEatTick = tickCount;
+        console.log('[NAV-HH] Fainting — eating immediately (no cooldown, last chance)');
+        env.sendKey('e'.charCodeAt(0));
+        return true;
+      }
+      // No food available or choked — will transition to Fainted next
       env.sendKey('.'.charCodeAt(0));
       return true;
     }
 
-    // SATIATED: never eat — choking will kill us. Just keep navigating.
-    if (hungerTrimmed === 'Satiated') return false;
+    // Fainted = unconscious. NetHack ignores all input keys.
+    // Try 'e' every few ticks in case we JUST recovered this tick.
+    if (hungerTrimmed === 'Fainted') {
+      if (!navCtx.choked && !noFood && (tickCount - navCtx.lastEatTick) > 3) {
+        navCtx.lastEatTick = tickCount;
+        env.sendKey('e'.charCodeAt(0));
+        return true;
+      }
+      env.sendKey('.'.charCodeAt(0));
+      return true;
+    }
 
     // Detect hunger from status field
-    const isHungry = hungerTrimmed === 'Hungry' || hungerTrimmed === 'Weak' ||
-                     hungerTrimmed === 'Fainted' || hungerTrimmed === 'Fainting';
+    const isHungry = hungerTrimmed === 'Hungry' || hungerTrimmed === 'Weak';
     // Also check messages for more reliable detection
     const hungerFromMsgs = msgs.some(m =>
       m.toLowerCase().includes('hungry') || m.toLowerCase().includes('weak') ||
@@ -48,14 +68,26 @@
     );
     const isHungryCombined = isHungry || hungerFromMsgs;
 
-    const noFood = msgs.some(m => m.includes("don't have anything to eat"));
     const justChoked = msgs.some(m => m.includes('choke') || m.includes('choking'));
     if (justChoked) navCtx.choked = true;
 
     // Eat when hungry/weak/fainting
-    const isWeak = hungerTrimmed === 'Weak' || hungerTrimmed === 'Fainting';
-    const eatCooldown = isWeak ? 5 : 20;
-    if (isHungryCombined && !noFood && !navCtx.choked && (tickCount - navCtx.lastEatTick) > eatCooldown) {
+    // During wall search, only eat when Weak — Hungry can wait until
+    // wall search finishes or finds something. Wall search is time-critical.
+    const isWeak = hungerTrimmed === 'Weak';
+    // Lowered cooldown for "Hungry" from 20 to 5 — eat aggressively to avoid faint.
+    const eatCooldown = 5;
+    const wallSearchActive = navCtx.wallSearchPhase;
+    // CHOKED FIX: If choked but not Satiated, clear the flag and try to eat anyway.
+    // Choking only kills in SATIATED state; when hungry, clearing the flag lets us
+    // eat corpses that the pet drops (e.g. "lichen corpse").
+    if (navCtx.choked && hungerTrimmed !== 'Satiated') {
+      navCtx.choked = false;
+    }
+    const shouldEat = isHungryCombined && !noFood && !navCtx.choked &&
+                      (tickCount - navCtx.lastEatTick) > eatCooldown &&
+                      (!wallSearchActive || isWeak);
+    if (shouldEat) {
       navCtx.lastEatTick = tickCount;
       navCtx.choked = false;
       env.sendKey('e'.charCodeAt(0));

@@ -527,17 +527,21 @@ export async function nethackShimCallback(name, ...args) {
         shimState.messages.push(query);
         clearInputBuffer();
 
-        // Auto-resolve: pick/select -> y, "Really step" -> y (walk onto traps),
-        // eat prompt -> 'a' (eat from floor), other -> default
+        // Auto-resolve: pick/select -> y, "Really step" -> n, eat prompts -> y/'a', other -> default
         let autoChar;
         if (query.toLowerCase().includes('pick') || query.toLowerCase().includes('select') || query.toLowerCase().includes('swap places')) {
             autoChar = 'y'.charCodeAt(0);
         } else if (query.includes('Really step')) {
             autoChar = 'n'.charCodeAt(0); // Don't step on traps
+        } else if (query.toLowerCase().includes('eat it') || query.toLowerCase().includes('eat that')) {
+            // "There is a lichen corpse here; eat it?" — YES, we're starving!
+            log('yn_function: eat floor item prompt, answering YES');
+            autoChar = 'y'.charCodeAt(0);
         } else if (query.toLowerCase().includes('what do you want to eat')) {
             log('yn_function: eat prompt detected, query=', query);
             // Parse valid food choices from the prompt, e.g. [fg or ?*] means f or g are food items
-            let foodChar = defaultChar;
+            // Always default to 'a' — the generic 'n' default from def=0 would cancel the action.
+            let foodChar = 'a'.charCodeAt(0);
             const choiceMatch = query.match(/\[([^\]]+)\]/);
             if (choiceMatch) {
                 const options = choiceMatch[1].replace(/\s+or\s+/g, '').replace(/[^a-z?*]/gi, '');
@@ -547,6 +551,33 @@ export async function nethackShimCallback(name, ...args) {
                 }
             }
             autoChar = foodChar;
+        } else if (query.toLowerCase().includes('what do you want to read')) {
+            // "What do you want to read? [abcdefghijklmnopqrstuvwxyz or ?*]"
+            // Parse valid scroll/spellbook choices and pick the first one.
+            log('yn_function: read prompt detected, query=', query);
+            // Always default to 'a' — the generic 'n' default from def=0 would cancel the action.
+            let readChar = 'a'.charCodeAt(0);
+            const choiceMatch = query.match(/\[([^\]]+)\]/);
+            if (choiceMatch) {
+                const options = choiceMatch[1].replace(/\s+or\s+/g, '').replace(/[^a-z?*]/gi, '');
+                for (const c of options) {
+                    if (c !== '?' && c !== '*') { readChar = c.charCodeAt(0); break; }
+                }
+            }
+            autoChar = readChar;
+        } else if (query.toLowerCase().includes('what do you want to drink')) {
+            // "What do you want to drink? [abcdefghijklmnopqrstuvwxyz or ?*]"
+            log('yn_function: drink prompt detected, query=', query);
+            // Always default to 'a' — the generic 'n' default from def=0 would cancel the action.
+            let drinkChar = 'a'.charCodeAt(0);
+            const choiceMatch = query.match(/\[([^\]]+)\]/);
+            if (choiceMatch) {
+                const options = choiceMatch[1].replace(/\s+or\s+/g, '').replace(/[^a-z?*]/gi, '');
+                for (const c of options) {
+                    if (c !== '?' && c !== '*') { drinkChar = c.charCodeAt(0); break; }
+                }
+            }
+            autoChar = drinkChar;
         } else {
             autoChar = defaultChar;
         }
