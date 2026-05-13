@@ -126,6 +126,15 @@
         }
         return true;
       }
+      // Door unlock/lock prompts — answer no so we can kick instead
+      if (ynText.toLowerCase().includes('unlock it with') || ynText.toLowerCase().includes('lock it with')) {
+        env.sendKey('n'.charCodeAt(0));
+        return true;
+      }
+      // Catch-all for unknown YN prompts — default to no (safer)
+      env.sendKey('n'.charCodeAt(0));
+      console.log(`[NAV-MODAL] Unknown YN prompt: ${ynText.slice(0, 80)} — defaulting to no`);
+      return true;
       // Teleport confirmation: accept default
       if (ynText.toLowerCase().includes('teleport') || ynText.toLowerCase().includes('where')) {
         env.sendKey('y'.charCodeAt(0));
