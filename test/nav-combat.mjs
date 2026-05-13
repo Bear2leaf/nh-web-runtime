@@ -22,6 +22,9 @@
   function handleCombat(navCtx) {
     const { env, player, grid, hadPetBlock, knownTrapPositions, isInCorridor, tickCount } = navCtx;
     const blocked = knownTrapPositions || new Set();
+    const maxHp = env.getMaxHp() || 1;
+    const curHp = env.getHp();
+    const hpRatio = curHp / maxHp;
 
     // Fainted/Fainting: player is unconscious, can't move. Combat flee is futile.
     // Return false so food/hp-hunger handlers can run (they send '.' to wait).
@@ -85,9 +88,6 @@
       navCtx.lastOnTileTick = tickCount;
       navCtx.lastHitMsg = hitMsg;
       navCtx.lastHitTick = tickCount;
-      const maxHp = env.getMaxHp() || 1;
-      const curHp = env.getHp();
-      const hpRatio = curHp / maxHp;
       const consecHits = navCtx._consecutiveOnTileHits || 1;
       console.log(`[NAV-CBT] On-tile hitMsg="${hitMsg}" hp=${curHp}/${maxHp} consecHits=${consecHits} tick=${tickCount}`);
 
@@ -173,7 +173,6 @@
     }
 
 
-    const hpRatio = curHp / maxHp;
     // Flee threshold: 10% — in NetHack, fleeing from an adjacent monster triggers
     // an attack of opportunity and the monster follows. Fighting almost always
     // deals more damage to the monster than fleeing costs the player.
@@ -184,6 +183,8 @@
 
     // Low HP: try to escape first. At >40% HP, always fight.
     // fightIdx computed here so Phase 5 (cornered) can reference it
+    const dx = adjHostile ? adjHostile.x - player.x : 0;
+    const dy = adjHostile ? adjHostile.y - player.y : 0;
     const fightIdx = adjHostile ? DIRS.findIndex(([ddx, ddy]) => ddx === dx && ddy === dy) : -1;
     if (lowHp) {
       console.log(`[NAV-CBT] FLEE at tick=${navCtx.tickCount} hp=${curHp}/${maxHp} ratio=${hpRatio.toFixed(2)} lowHp=${lowHp}`);

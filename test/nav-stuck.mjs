@@ -23,10 +23,10 @@
     const { env, tickCount, stuckCount, wallSearchPhase,
             lastSentDir, lastMoveDir, knownTrapPositions, msgs } = navCtx;
 
-    // When wall search is active, don't intercept — let wall search handle navigation.
-    // Only send ESC if wall search has been stuck for extremely long (>500).
+    // When wall search is active, don't intercept — let wall search/teleport handle it.
+    // Handle stuck should only run as a last resort when other handlers have failed.
     if (wallSearchPhase && stuckCount < 500) {
-      // Don't consume the tick; let wall search handler deal with it
+      // Don't consume the tick; let wall search/teleport handler deal with it
       // But still track forced direction changes below
     } else if (stuckCount > 20 && (stuckCount % 20 === 0)) {
       // Check if stuck because of a trap — if so, mark it and pathfind around it
