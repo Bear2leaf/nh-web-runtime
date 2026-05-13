@@ -77,22 +77,20 @@
     const sawPetBlockMsg = navCtx.msgs.some(m => m.includes('is in the way'));
     navCtx.hadPetBlock = sawPetSwap || sawPetBlockMsg;
 
-    // Track consecutive pet swaps — only increment on a FRESH swap event (not re-seeing old messages).
-    // Use lastSwapTick to detect new swaps: increment only if this is the first tick since the swap.
+    // Track consecutive ticks with pet swap messages.
+    // Swap messages linger in the 15-message buffer, so a single swap may count
+    // for 2-3 ticks. We decay slowly (subtract 1 per tick without swap) so that
+    // genuine swap loops accumulate quickly while occasional swaps don't block.
     if (sawPetSwap) {
-      if (navCtx.lastSwapTick !== navCtx.tickCount - 1) {
-        // New swap event (not a re-seen old message)
-        navCtx.consecutivePetSwaps = (navCtx.consecutivePetSwaps || 0) + 1;
-      }
-      navCtx.lastSwapTick = navCtx.tickCount;
+      navCtx.consecutivePetSwaps = (navCtx.consecutivePetSwaps || 0) + 1;
     } else {
-      navCtx.consecutivePetSwaps = 0;
-      navCtx.lastSwapTick = -1;
+      navCtx.consecutivePetSwaps = Math.max(0, (navCtx.consecutivePetSwaps || 0) - 1);
     }
-    // Block pet swaps after 4 consecutive swaps (pet keeps blocking the path)
-    navCtx.petSwapBlocked = navCtx.consecutivePetSwaps > 4;
-    if (navCtx.petSwapBlocked && navCtx.consecutivePetSwaps === 5) {
-      console.log(`[NAV] Blocking pet swaps after 5 consecutive swaps — pet is blocking the path`);
+    // Block pet swaps after ~8 ticks with swap messages (~3-4 actual swaps)
+    const wasBlocked = navCtx.petSwapBlocked;
+    navCtx.petSwapBlocked = navCtx.consecutivePetSwaps > 8;
+    if (navCtx.petSwapBlocked && !wasBlocked) {
+      console.log(`[NAV] Blocking pet swaps after ${navCtx.consecutivePetSwaps} swap ticks — pet is blocking the path`);
     }
 
     // Track recent positions for oscillation detection

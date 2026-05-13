@@ -12,7 +12,7 @@
   const DIRS = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[1,1],[-1,1]];
   const KEY  = ['h','l','k','j','y','u','n','b'];
   const MONSTERS = new Set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&;:\'I');
-  const PET_CHARS = new Set(['c','d','f','n','q','r','s','t','w','y']); // d=canine (dog/wolf), f=feline (cat), others=common pets
+  const PET_CHARS = new Set(['c','d','f','n','q','r','s','t','u','w','y']); // d=canine, f=feline, u=horse/pony (knight pet), others=common pets
 
   function isWalkable(ch) {
     if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) return false;
