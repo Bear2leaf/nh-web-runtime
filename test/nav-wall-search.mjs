@@ -292,6 +292,10 @@
     // Periodic wall-adjacent searching
     if (navCtx.wallSearchStep % 4 === 0 && isAdjacentToWall(player.x, player.y, grid)) {
       const tKey = player.x + ',' + player.y;
+      // Don't search while standing on a known trap — NetHack warns and accomplishes nothing
+      if (navCtx.knownTrapPositions && navCtx.knownTrapPositions.has(tKey)) {
+        return false;
+      }
       if (!navCtx.searchedWallPos.has(tKey)) {
         navCtx.searchedWallPos.add(tKey);
         navCtx.lastSearchTick = tickCount;

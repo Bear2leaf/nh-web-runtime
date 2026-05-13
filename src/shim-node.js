@@ -576,8 +576,8 @@ export async function nethackShimCallback(name, ...args) {
             autoChar = 'y'.charCodeAt(0);
         } else if (query.includes('Really step')) {
             autoChar = 'n'.charCodeAt(0); // Don't step on traps
-        } else if (query.toLowerCase().includes('eat it') || query.toLowerCase().includes('eat that')) {
-            // "There is a lichen corpse here; eat it?" — YES, we're starving!
+        } else if (query.toLowerCase().includes('eat it') || query.toLowerCase().includes('eat that') || query.toLowerCase().includes('eat one')) {
+            // "There is a lichen corpse here; eat it?" / "eat one?" — YES, we're starving!
             log('yn_function: eat floor item prompt, answering YES');
             autoChar = 'y'.charCodeAt(0);
         } else if (query.toLowerCase().includes('what do you want to eat')) {
@@ -621,6 +621,10 @@ export async function nethackShimCallback(name, ...args) {
                 }
             }
             autoChar = drinkChar;
+        } else if (query.toLowerCase().includes('unlock it with')) {
+            // Unlock doors with credit card / skeleton key / lock pick
+            log('yn_function: unlock prompt detected, answering YES');
+            autoChar = 'y'.charCodeAt(0);
         } else {
             autoChar = defaultChar;
         }

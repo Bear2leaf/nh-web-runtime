@@ -265,8 +265,9 @@
 
       // ---- Pet swap throttle: if too many consecutive swaps, wait to let pet move ----
       // This prevents infinite swap loops where player and pet keep exchanging positions.
-      // Skip when stairs visible, low HP, or hungry — these trump pet avoidance.
-      if (navCtx.petSwapBlocked && !navCtx.stairs && !navCtx.lowHp && !navCtx.isHungryCombined) {
+      // Only skip when stairs visible or low HP — hunger must not bypass pet blocking,
+      // or the AI oscillates with the pet while trying to reach food.
+      if (navCtx.petSwapBlocked && !navCtx.stairs && !navCtx.lowHp) {
         // Decay: each wait reduces the counter, eventually allowing swaps again
         navCtx.consecutivePetSwaps -= 2;
         if (navCtx.consecutivePetSwaps <= 0) {

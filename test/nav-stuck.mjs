@@ -92,6 +92,14 @@
 
     const isInCorridor = navCtx.isInCorridor;
     if (stuckCount > 40 && !isInCorridor && stuckCount % 20 === 0) {
+      // Don't search while standing on a known trap — NetHack warns "Waiting doesn't
+      // feel like a good idea right now" and searching accomplishes nothing.
+      const onTrap = navCtx.knownTrapPositions && navCtx.knownTrapPositions.has(
+        navCtx.player.x + ',' + navCtx.player.y);
+      if (onTrap) {
+        console.log(`[NAV] Stuck on known trap at ${navCtx.player.x},${navCtx.player.y}, skipping search`);
+        return false;
+      }
       console.log(`[NAV] Stuck in room, searching for hidden doors at tick=${tickCount}`);
       navCtx.lastSearchTick = tickCount;
       env.sendKey('s'.charCodeAt(0));

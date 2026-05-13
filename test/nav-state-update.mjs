@@ -165,6 +165,17 @@
       }
     }
 
+    // Detect trap under player from "Waiting doesn't feel like a good idea" message
+    // This happens when searching/resting on a trap tile.
+    const waitingTrapMsg = navCtx.msgs.find(m => m.includes("Waiting doesn't feel like a good idea"));
+    if (waitingTrapMsg) {
+      const key = navCtx.player.x + ',' + navCtx.player.y;
+      if (!navCtx.knownTrapPositions.has(key)) {
+        navCtx.knownTrapPositions.add(key);
+        console.log(`[NAV] Discovered trap UNDER PLAYER at ${navCtx.player.x},${navCtx.player.y} (from waiting msg), total=${navCtx.knownTrapPositions.size}`);
+      }
+    }
+
     // Track position changes for stuck detection
     const moved = !navCtx.lastPlayerPos ||
       navCtx.player.x !== navCtx.lastPlayerPos.x ||
