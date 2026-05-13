@@ -13,7 +13,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-stairs.js'); return; }
 
-  const { W, H, DIRS, KEY, bfs } = NH;
+  const { W, H, DIRS, KEY, bfs, bfsAvoiding } = NH;
 
   /**
    * Navigate to stairs if visible. Opens doors blocking the path.
@@ -23,7 +23,7 @@
     const { env, player, grid, stairs, features, triedDoors } = navCtx;
 
     if (stairs) {
-      navCtx.lastStairsPos = { x: stairs.x, y: stairs.y };
+      navCtx.lastStairsPos = { x: stairs.x, y: stairs.y, stairsType: '>' };
 
       // On the stairs — descend
       if (player.x === stairs.x && player.y === stairs.y) {
@@ -32,7 +32,8 @@
       }
 
       // BFS path to stairs
-      const next = bfs(player.x, player.y, stairs.x, stairs.y, grid, navCtx.openedDoors);
+      const blocked = navCtx.knownTrapPositions || new Set();
+      const next = bfsAvoiding(player.x, player.y, stairs.x, stairs.y, grid, blocked, navCtx.openedDoors);
       if (next) {
         navCtx.wallSearchPhase = false;
         navCtx.enclosedTick = 0;
@@ -77,7 +78,7 @@
             navCtx.pendingDir = DIRS.findIndex(([dx2,dy2]) => dx2===ddx && dy2===ddy);
             return true;
           }
-          const doorNext = bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid, navCtx.openedDoors);
+          const doorNext = bfsAvoiding(player.x, player.y, bestDoor.x, bestDoor.y, grid, blocked, navCtx.openedDoors);
           if (doorNext) {
             const idx = DIRS.findIndex(([ddx2,ddy2]) =>
               ddx2===(doorNext.x-player.x) && ddy2===(doorNext.y-player.y));

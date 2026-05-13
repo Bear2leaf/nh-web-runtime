@@ -250,10 +250,12 @@
       // ---- Stairs rush: if stairs are visible and close, run to them instead of fighting ----
       // Getting to stairs is the primary goal. Adjacent monsters can be ignored if
       // stairs are within reach — descending ends all combat immediately.
-      if (navCtx.stairs && !navCtx.lowHp) {
+      if (navCtx.stairs) {
         const sDist = Math.abs(navCtx.stairs.x - navCtx.player.x) +
                       Math.abs(navCtx.stairs.y - navCtx.player.y);
-        if (sDist <= 5) {
+        // When low HP, rush to stairs at any distance — descending ends combat instantly
+        const rushThreshold = navCtx.lowHp ? 50 : 5;
+        if (sDist <= rushThreshold) {
           if (NH.handleStairs && NH.handleStairs(navCtx)) return true;
         }
       }
