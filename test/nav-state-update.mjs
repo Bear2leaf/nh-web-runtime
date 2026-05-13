@@ -242,7 +242,7 @@
       // Don't trigger wall search if stairs are visible — navigate directly to them
       if (!navCtx.wallSearchPhase && !navCtx.isInCorridor && !wallSearchSuppressed && !corridorVisible && !navCtx.stairs) {
         const heavyOscillation = navCtx.isOscillating && navCtx.enclosedTick > 40;
-        if ((isEnclosed && navCtx.enclosedTick > 200) ||
+        if ((isEnclosed && navCtx.enclosedTick > 50) ||
             (levelSearchTimeout && navCtx.enclosedTick > 20) ||
             heavyOscillation) {
           navCtx.wallFollowPath = buildWallFollowPath(navCtx.player.x, navCtx.player.y, navCtx.grid);

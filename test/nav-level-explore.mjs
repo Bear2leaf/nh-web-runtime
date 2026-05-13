@@ -120,7 +120,7 @@
     // ---- BFS to unexplored areas (fallback when no untried doors) ----
     // Only search for unexplored boundaries after all doors have been tried.
     // Capped BFS in findNearestUnexplored prevents chasing distant targets.
-    const boundary = NH.findNearestUnexplored(grid, player.x, player.y);
+    const boundary = NH.findNearestUnexplored(grid, player.x, player.y, blocked);
     if (boundary) {
       const bch = (grid[boundary.y]||'')[boundary.x] || ' ';
       if (isWalkable(bch) && !MONSTERS.has(bch)) {

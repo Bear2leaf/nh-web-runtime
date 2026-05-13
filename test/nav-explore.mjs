@@ -24,7 +24,7 @@
     const blocked = knownTrapPositions || new Set();
 
     // ---- Unexplored boundary ----
-    const boundary = NH.findNearestUnexplored(grid, player.x, player.y);
+    const boundary = NH.findNearestUnexplored(grid, player.x, player.y, blocked);
     if (boundary) {
       const bch = (grid[boundary.y]||'')[boundary.x] || ' ';
       if (!PET_CHARS.has(bch) && isWalkable(bch)) {
