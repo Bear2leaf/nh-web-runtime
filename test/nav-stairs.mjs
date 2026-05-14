@@ -13,7 +13,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-stairs.js'); return; }
 
-  const { W, H, DIRS, KEY, bfs, bfsAvoiding } = NH;
+  const { W, H, DIRS, KEY, bfs, bfsAvoiding, bfsRush } = NH;
 
   /**
    * Navigate to stairs if visible. Opens doors blocking the path.
@@ -31,13 +31,24 @@
         return true;
       }
 
-      // BFS path to stairs
+      // BFS path to stairs — use rush BFS (ignores monsters) when in combat or low HP
       const blocked = navCtx.knownTrapPositions || new Set();
-      const next = bfsAvoiding(player.x, player.y, stairs.x, stairs.y, grid, blocked, navCtx.openedDoors);
+      const inCombat = navCtx.features && navCtx.features.monsters.some(m => {
+        const dist = Math.abs(m.x - player.x) + Math.abs(m.y - player.y);
+        return dist <= 1;
+      });
+      const useRush = inCombat || (navCtx.maxHp > 0 && navCtx.currentHp / navCtx.maxHp < 0.5);
+      const next = useRush
+        ? bfsRush(player.x, player.y, stairs.x, stairs.y, grid, navCtx.openedDoors, blocked)
+        : bfsAvoiding(player.x, player.y, stairs.x, stairs.y, grid, blocked, navCtx.openedDoors);
       if (next) {
         navCtx.wallSearchPhase = false;
         navCtx.enclosedTick = 0;
         const nextCh = (grid[next.y]||'')[next.x] || ' ';
+        // If pet swap is blocked, don't path through pets — it causes oscillation
+        if (MONSTERS.has(nextCh) && navCtx.petSwapBlocked) {
+          return false;
+        }
         // Open door on the path
         if (nextCh === '+') {
           env.sendKey('o'.charCodeAt(0));
@@ -47,7 +58,7 @@
         }
         const idx = DIRS.findIndex(([ddx,ddy]) =>
           ddx===(next.x-player.x) && ddy===(next.y-player.y));
-        if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+        if (idx >= 0) { navCtx.lastMoveDir = idx; env.sendKey(KEY[idx].charCodeAt(0)); return true; }
       } else {
         // BFS failed — the path is blocked. Find and mark blocking doors as tried
         // so the level search knows to try other approaches (wall search, etc.)
@@ -82,7 +93,7 @@
           if (doorNext) {
             const idx = DIRS.findIndex(([ddx2,ddy2]) =>
               ddx2===(doorNext.x-player.x) && ddy2===(doorNext.y-player.y));
-            if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+            if (idx >= 0) { navCtx.lastMoveDir = idx; env.sendKey(KEY[idx].charCodeAt(0)); return true; }
           }
         }
       }

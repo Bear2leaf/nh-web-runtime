@@ -18,7 +18,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-ai.mjs'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, shuffleDirs,
+  const { W, H, DIRS, KEY, MONSTERS, isWalkable, shuffleDirs,
           tryTeleport, MAX_TELEPORT_ATTEMPTS } = NH;
 
   // Use setTimeout(0) in browser to yield to WASM input processing;
@@ -117,6 +117,12 @@
       // Trap avoidance
       knownTrapPositions: new Set(),
 
+      // No-food cooldown (persisted across message buffer turnover)
+      noFoodUntilTick: 0,
+
+      // Oscillation breaker cooldown
+      lastOscBreakTick: 0,
+
       // Opened doors: tiles that were '+' but are now '-' or '|' after opening.
       // BFS treats these as walkable so the AI can navigate through them.
       openedDoors: new Set(),
@@ -167,7 +173,7 @@
       if (navCtx.tickCount <= 3) console.log('[NAV] step() tick=' + navCtx.tickCount);
 
       // Stuck timeout
-      if (navCtx.stuckCount > 1500) { stop('stuck'); return false; }
+      if (navCtx.stuckCount > 1200) { stop('stuck'); return false; }
       // Max ticks timeout
       if (navCtx.tickCount > navCtx.MAX_TICKS) { stop('max-ticks'); return false; }
 
@@ -191,60 +197,142 @@
         return true;
       }
 
-      // Detect hidden adjacent monster: "Are you waiting to get hit?" means
-      // there's an invisible monster adjacent. Don't wait — move in a random direction.
-      // Debounced: only fire once per ~10 ticks since the message stays in the
-      // message buffer for many ticks after the actual event.
-      const waitingForHit = navCtx.msgs.some(m => m.includes('waiting to get hit'));
-      if (waitingForHit && navCtx.tickCount - (navCtx.lastWaitingHitTick || 0) > 10) {
-        navCtx.lastWaitingHitTick = navCtx.tickCount;
-        console.log(`[NAV] Hidden monster detected (waiting to get hit) at tick=${navCtx.tickCount}`);
+      // ---- Trap prompt safety net: if we just got a "Really step" message,
+      // mark the trap and force a different direction this tick.
+      // This prevents handlers from repeatedly sending the same direction
+      // when the trap marking in updateMapAndState somehow missed it.
+      const trapMsg = navCtx.msgs.find(m => m.includes('Really step') || m.includes('Step into') || m.includes('step into'));
+      // Only trigger safety net when actually stuck (hasn't moved recently).
+      // Otherwise we might falsely mark safe tiles as traps from stale messages.
+      if (trapMsg && navCtx.lastMoveDir >= 0 && navCtx.stuckCount > 3) {
+        const [tdx, tdy] = DIRS[navCtx.lastMoveDir];
+        const trapKey = (navCtx.player.x + tdx) + ',' + (navCtx.player.y + tdy);
+        if (!navCtx.knownTrapPositions.has(trapKey)) {
+          navCtx.knownTrapPositions.add(trapKey);
+          console.log(`[NAV-AI] Safety-net trap mark at ${trapKey} from lastMoveDir=${navCtx.lastMoveDir}`);
+        }
+        // Force a different direction this tick
         const shuffled = shuffleDirs();
-        // Prefer safe directions (no monsters, no known traps)
         for (const di of shuffled) {
+          if (di === navCtx.lastMoveDir) continue;
           const [dx, dy] = DIRS[di];
           const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (navCtx.grid[ny]||'')[nx] || ' ';
-          const trapKey = nx + ',' + ny;
-          if (isWalkable(ch) && !MONSTERS.has(ch) && !navCtx.knownTrapPositions.has(trapKey)) {
+          if (isWalkable(ch) && !MONSTERS.has(ch) &&
+              !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+            console.log(`[NAV-AI] Forcing alternate dir ${di} to avoid trap at ${trapKey}`);
             navCtx.lastMoveDir = di;
             navCtx.env.sendKey(KEY[di].charCodeAt(0));
             return true;
           }
         }
-        // All safe directions blocked — try to swap with pet, open door, or search
-        for (const di of shuffled) {
-          const [dx, dy] = DIRS[di];
-          const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
-          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-          const ch = (navCtx.grid[ny]||'')[nx] || ' ';
-          if (PET_CHARS.has(ch)) {
-            // Swap with pet — might let us move past it
-            navCtx.lastMoveDir = di;
-            navCtx.env.sendKey(KEY[di].charCodeAt(0));
-            return true;
-          }
-          if (ch === '+') {
-            // Open door — might reveal or escape the monster
-            navCtx.env.sendKey('o'.charCodeAt(0));
-            navCtx.pendingDir = di;
-            return true;
-          }
+        // All directions blocked — try teleport if stuck long enough
+        if (navCtx.stuckCount > 80 && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+          if (tryTeleport(navCtx)) return true;
         }
-        // Truly trapped — first search to reveal, then attack if search keeps happening
-        navCtx.hiddenMonsterSearchCount = (navCtx.hiddenMonsterSearchCount || 0) + 1;
-        if (navCtx.hiddenMonsterSearchCount > 3) {
-          // Searched enough — try fighting in a random direction. 'F' prefix forces fight.
-          navCtx.hiddenMonsterSearchCount = 0;
-          const rndDir = Math.floor(Math.random() * 8);
-          console.log(`[NAV] Search not revealing monster — attacking in direction ${rndDir} at tick=${navCtx.tickCount}`);
-          navCtx.env.sendKey('F'.charCodeAt(0));
-          navCtx.pendingDir = rndDir;
-          return true;
-        }
-        navCtx.env.sendKey('s'.charCodeAt(0));
+        // Otherwise wait
+        navCtx.env.sendKey('.'.charCodeAt(0));
         return true;
+      }
+
+      // Detect hidden adjacent monster: "Are you waiting to get hit?" means
+      // there's an invisible monster adjacent, or the player is held (lichen).
+      // Don't wait — move or attack aggressively.
+      // Fire every tick the message is present; the message may persist but
+      // we need to keep trying to escape or kill the monster.
+      // Only check the last few messages to avoid firing on stale buffer entries
+      const lastFewMsgs = navCtx.msgs.slice(-5);
+      const waitingForHit = lastFewMsgs.some(m => m.includes('waiting to get hit'));
+      const heldByLichen = lastFewMsgs.some(m => m.includes('cannot escape'));
+      // If there's a visible adjacent monster, let handleCombat deal with it first.
+      // The hidden-monster handler can run next tick if combat doesn't clear the message.
+      const hasVisibleAdjMonster = navCtx.features && navCtx.features.monsters.some(m => {
+        const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
+        return dist <= 1;
+      });
+      if ((waitingForHit || heldByLichen) && !hasVisibleAdjMonster) {
+        navCtx.lastWaitingHitTick = navCtx.tickCount;
+        console.log(`[NAV] Hidden monster detected (waiting to get hit${heldByLichen ? ', held' : ''}) at tick=${navCtx.tickCount}`);
+        const shuffled = shuffleDirs();
+
+        // If held by a monster (e.g. lichen), moving won't work — attack immediately.
+        // Also attack if we've already tried moving recently and it didn't work.
+        const recentMoveFailed = navCtx.stuckCount > 5 && waitingForHit;
+        if (!heldByLichen && !recentMoveFailed) {
+          // Prefer safe directions (no monsters, no known traps)
+          for (const di of shuffled) {
+            const [dx, dy] = DIRS[di];
+            const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+            const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+            const trapKey = nx + ',' + ny;
+            if (isWalkable(ch) && !MONSTERS.has(ch) && !navCtx.knownTrapPositions.has(trapKey)) {
+              navCtx.lastMoveDir = di;
+              navCtx.env.sendKey(KEY[di].charCodeAt(0));
+              return true;
+            }
+          }
+          // All safe directions blocked — try to swap with pet, open door
+          for (const di of shuffled) {
+            const [dx, dy] = DIRS[di];
+            const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+            const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+            if (MONSTERS.has(ch)) {
+              navCtx.lastMoveDir = di;
+              navCtx.env.sendKey(KEY[di].charCodeAt(0));
+              return true;
+            }
+            if (ch === '+') {
+              navCtx.env.sendKey('o'.charCodeAt(0));
+              navCtx.pendingDir = di;
+              return true;
+            }
+          }
+        }
+        // Truly trapped or held — attack systematically in all directions.
+        // Skip the known pet position to avoid making pets hostile.
+        let attackDir = (navCtx.hiddenMonsterAttackDir || 0) % 8;
+        const knownPet = navCtx.petPosition;
+        let attempts = 0;
+        while (attempts < 8) {
+          const [adx, ady] = DIRS[attackDir];
+          const ax = navCtx.player.x + adx, ay = navCtx.player.y + ady;
+          if (!knownPet || ax !== knownPet.x || ay !== knownPet.y) {
+            break; // Safe direction found
+          }
+          attackDir = (attackDir + 1) % 8;
+          attempts++;
+        }
+        navCtx.hiddenMonsterAttackDir = attackDir + 1;
+        console.log(`[NAV] Hidden monster trapped — force-attacking direction ${attackDir} at tick=${navCtx.tickCount}`);
+        navCtx.env.sendKey('F'.charCodeAt(0));
+        navCtx.pendingDir = attackDir;
+        return true;
+      }
+
+      // ---- Oscillation breaker: if stuck bouncing between same tiles, force random direction ----
+      // Note: stuckCount is reset on movement, so oscillation can happen with low stuckCount.
+      // We use a position-history-based check (isOscillating) instead.
+      if (navCtx.isOscillating &&
+          navCtx.tickCount - (navCtx.lastOscBreakTick || 0) > 15) {
+        navCtx.lastOscBreakTick = navCtx.tickCount;
+        const shuffled = shuffleDirs();
+        for (const di of shuffled) {
+          if (di === navCtx.lastMoveDir) continue;
+          const [dx, dy] = DIRS[di];
+          const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+          if (isWalkable(ch) && !MONSTERS.has(ch) &&
+              !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+            console.log(`[NAV] Oscillation breaker: forcing dir ${di} at tick=${navCtx.tickCount}`);
+            navCtx.lastMoveDir = di;
+            navCtx.env.sendKey(KEY[di].charCodeAt(0));
+            return true;
+          }
+        }
       }
 
       // ---- Stairs rush: if stairs are visible and close, run to them instead of fighting ----
@@ -253,8 +341,12 @@
       if (navCtx.stairs) {
         const sDist = Math.abs(navCtx.stairs.x - navCtx.player.x) +
                       Math.abs(navCtx.stairs.y - navCtx.player.y);
-        // When low HP, rush to stairs at any distance — descending ends combat instantly
-        const rushThreshold = navCtx.lowHp ? 50 : 5;
+        // When low HP or adjacent monster, rush to stairs at any distance — descending ends combat instantly
+        const inCombat = navCtx.features && navCtx.features.monsters.some(m => {
+          const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
+          return dist <= 1;
+        });
+        const rushThreshold = (navCtx.lowHp || inCombat) ? 50 : 8;
         if (sDist <= rushThreshold) {
           if (NH.handleStairs && NH.handleStairs(navCtx)) return true;
         }
@@ -262,21 +354,6 @@
 
       // ---- Combat: adjacent monster — ALWAYS before food (getting bitten is worse than starving) ----
       if (NH.handleCombat && NH.handleCombat(navCtx)) return true;
-
-      // ---- Pet swap throttle: if too many consecutive swaps, wait to let pet move ----
-      // This prevents infinite swap loops where player and pet keep exchanging positions.
-      // Only skip when stairs visible or low HP — hunger must not bypass pet blocking,
-      // or the AI oscillates with the pet while trying to reach food.
-      if (navCtx.petSwapBlocked && !navCtx.stairs && !navCtx.lowHp) {
-        // Decay: each wait reduces the counter, eventually allowing swaps again
-        navCtx.consecutivePetSwaps -= 2;
-        if (navCtx.consecutivePetSwaps <= 0) {
-          navCtx.consecutivePetSwaps = 0;
-          navCtx.petSwapBlocked = false;
-        }
-        navCtx.env.sendKey('.'.charCodeAt(0));
-        return true;
-      }
 
       // ---- Food: navigate to & pick up floor food first ----
       if (NH.handleFood && NH.handleFood(navCtx)) return true;
@@ -348,6 +425,51 @@
           (navCtx.stuckCount > 500 && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS)) {
         console.log(`[NAV] Hard stuck: tick=${navCtx.tickCount} stuck=${navCtx.stuckCount} wallSearch=${inWallSearch}, teleporting`);
         if (tryTeleport(navCtx)) return true;
+      }
+
+      // ---- Pet swap throttle: if too many consecutive swaps, wait to let pet move ----
+      // Run this late so other handlers (doors, stairs, etc.) get a chance first.
+      // Only block when no other handler found a valid action.
+      if (navCtx.petSwapBlocked && !navCtx.lowHp) {
+        // Direction has been pet-blocked too many times. Try to move away.
+        if (navCtx.petPosition) {
+          const pdx = navCtx.petPosition.x - navCtx.player.x;
+          const pdy = navCtx.petPosition.y - navCtx.player.y;
+          const awayDirs = [];
+          for (let di = 0; di < 8; di++) {
+            const [dx, dy] = DIRS[di];
+            if (dx * pdx + dy * pdy > 0) continue;
+            const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+            const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+            if (isWalkable(ch) && !MONSTERS.has(ch) &&
+                !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+              awayDirs.push(di);
+            }
+          }
+          if (awayDirs.length > 0) {
+            const di = awayDirs[Math.floor(Math.random() * awayDirs.length)];
+            console.log(`[NAV] Pet swap throttle: moving away from pet at ${navCtx.petPosition.x},${navCtx.petPosition.y} in dir ${di}`);
+            navCtx.lastMoveDir = di;
+            navCtx.env.sendKey(KEY[di].charCodeAt(0));
+            return true;
+          }
+        }
+        // No away direction — wait briefly, then clear block counts and retry
+        if (navCtx.stuckCount > 200 && navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+          console.log(`[NAV] Pet-blocked and stuck for ${navCtx.stuckCount} ticks, trying teleport`);
+          if (tryTeleport(navCtx)) return true;
+        }
+        if (!navCtx.petSwapWaitUntil) navCtx.petSwapWaitUntil = navCtx.tickCount + 8;
+        if (navCtx.tickCount < navCtx.petSwapWaitUntil) {
+          navCtx.env.sendKey('.'.charCodeAt(0));
+          return true;
+        }
+        // Wait done — clear block counts and let normal navigation retry
+        navCtx.petSwapWaitUntil = 0;
+        navCtx._petBlockDirCounts = {};
+        console.log(`[NAV] Pet swap wait done, clearing block counts`);
+        // Fall through to explore
       }
 
       // ---- Explore: unexplored boundary + fallback random walk ----

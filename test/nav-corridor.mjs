@@ -13,7 +13,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-corridor.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, bfs, shuffleDirs,
+  const { W, H, DIRS, KEY, MONSTERS, isWalkable, bfs, shuffleDirs,
           isInDeadEnd, tryTeleport, MAX_TELEPORT_ATTEMPTS } = NH;
 
   /**
@@ -37,6 +37,7 @@
       if (enx >= 0 && enx < W && eny >= 0 && eny < H) {
         const ech = (grid[eny]||'')[enx] || ' ';
         if (isWalkable(ech) && !MONSTERS.has(ech)) {
+          navCtx.lastMoveDir = deadEndExit;
           env.sendKey(KEY[deadEndExit].charCodeAt(0));
           return true;
         }
@@ -106,7 +107,7 @@
     }
 
     if (nearestRoomEntrance) {
-      const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid, navCtx.openedDoors);
+      const next = bfs(player.x, player.y, nearestRoomEntrance.x, nearestRoomEntrance.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
       if (next) {
         // Only reset failure counters when making genuine progress — not when oscillating
         // between room and corridor. If corridorFailCount is already elevated, preserve it
@@ -134,7 +135,8 @@
             const nx = player.x + dx, ny = player.y + dy;
             if (nx < 0 || nx >= W || ny < 0 || ny >= H) return false;
             const ch = (grid[ny]||'')[nx] || ' ';
-            return isWalkable(ch) && !PET_CHARS.has(ch) && di !== lastSentDir;
+            return isWalkable(ch) && di !== lastSentDir &&
+                   !navCtx.knownTrapPositions.has(nx + ',' + ny);
           });
           if (alt !== undefined) idx = alt;
         }
@@ -159,7 +161,7 @@
       }
     }
     if (bestCorridor) {
-      const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid, navCtx.openedDoors);
+      const next = bfs(player.x, player.y, bestCorridor.x, bestCorridor.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
       if (next) {
         if (navCtx.corridorFailCount === 0) {
           navCtx.enclosedTick = 0;
@@ -248,7 +250,7 @@
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
             const ch = (grid[y]||'')[x] || ' ';
-            if (PET_CHARS.has(ch)) {
+            if (MONSTERS.has(ch)) {
               const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
               if (dist <= 2 && dist < nearestPetDist) {
                 nearestPetDist = dist; nearestPet = {x, y};
@@ -261,6 +263,7 @@
           const pidx = DIRS.findIndex(([dx,dy]) => dx===pdx && dy===pdy);
           if (pidx >= 0) {
             console.log(`[NAV] Pet blocking at ${nearestPet.x},${nearestPet.y}, swapping places (dir=${pidx}, attempt=${navCtx.petSwapConsecutive})`);
+            navCtx.lastMoveDir = pidx;
             env.sendKey(KEY[pidx].charCodeAt(0));
             return true;
           }
@@ -294,10 +297,10 @@
         }
       }
       if (nearestRoom) {
-        const next = bfs(player.x, player.y, nearestRoom.x, nearestRoom.y, grid, navCtx.openedDoors);
+        const next = bfs(player.x, player.y, nearestRoom.x, nearestRoom.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
         if (next) {
           const nextCh = (grid[next.y]||'')[next.x] || ' ';
-          if (!PET_CHARS.has(nextCh) && !(nextCh === 'd' && hadPetBlock)) {
+          if (!MONSTERS.has(nextCh)) {
             const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0) {
               console.log(`[NAV] Retreating from corridor to room at ${nearestRoom.x},${nearestRoom.y} via dir ${idx}`);
@@ -324,19 +327,19 @@
         corridorVisitCounts.clear();
         navCtx.corridorOscillationTick = 0;
         const shuffled = shuffleDirs();
-        // First: pick a corridor tile direction (preferred)
+        // First: pick a corridor tile direction (preferred, avoid traps)
         for (const di of shuffled) {
           const [dx, dy] = DIRS[di];
           const nx = player.x + dx, ny = player.y + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (grid[ny]||'')[nx] || ' ';
-          if (ch === '#' && !PET_CHARS.has(ch) && !MONSTERS.has(ch)) {
+          if (ch === '#' && !MONSTERS.has(ch) && !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
             navCtx.lastMoveDir = di;
             env.sendKey(KEY[di].charCodeAt(0));
             return true;
           }
         }
-        // Second: pick any walkable non-room direction (no monsters/pets)
+        // Second: pick any walkable non-room direction (no monsters/pets, avoid traps)
         for (const di of shuffled) {
           const [dx, dy] = DIRS[di];
           const nx = player.x + dx, ny = player.y + dy;
@@ -344,19 +347,19 @@
           const ch = (grid[ny]||'')[nx] || ' ';
           // Room floor (.) leads back to room — skip unless nothing else is available
           if (ch === '.' || ch === '<' || ch === '>') continue;
-          if (isWalkable(ch) && !PET_CHARS.has(ch) && !MONSTERS.has(ch)) {
+          if (isWalkable(ch) && !MONSTERS.has(ch) && !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
             navCtx.lastMoveDir = di;
             env.sendKey(KEY[di].charCodeAt(0));
             return true;
           }
         }
-        // Last resort: any walkable direction (including room floor)
+        // Last resort: any walkable direction (including room floor, but avoid traps)
         for (const di of shuffled) {
           const [dx, dy] = DIRS[di];
           const nx = player.x + dx, ny = player.y + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (grid[ny]||'')[nx] || ' ';
-          if (isWalkable(ch)) {
+          if (isWalkable(ch) && !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
             navCtx.lastMoveDir = di;
             env.sendKey(KEY[di].charCodeAt(0));
             return true;
@@ -369,6 +372,7 @@
         searchedWallPos.add(cKey);
         console.log(`[NAV] Search-from-corridor at ${cKey} (oscillation fallback)`);
         navCtx.lastSearchTick = tickCount;
+        navCtx.lastMoveDir = -1;
         env.sendKey('s'.charCodeAt(0));
         return true;
       }
@@ -381,20 +385,23 @@
         searchedWallPos.add(curKey);
         console.log(`[NAV] Searching from corridor at ${curKey}`);
         navCtx.lastSearchTick = tickCount;
+        navCtx.lastMoveDir = -1;
         env.sendKey('s'.charCodeAt(0));
         return true;
       }
     }
 
     // ---- Score each direction ----
+    const trapSet = navCtx.knownTrapPositions || new Set();
     let bestCorridorDir = -1, bestCorridorScore = -Infinity;
     for (let di = 0; di < 8; di++) {
       const [dx, dy] = DIRS[di];
       const nx = player.x + dx, ny = player.y + dy;
       if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+      if (trapSet.has(nx + ',' + ny)) continue; // skip known traps
       const nch = (grid[ny]||'')[nx] || ' ';
       if (nch === '|' || nch === '-' || nch === '+' || nch === ' ' || nch === '`') continue;
-      if (MONSTERS.has(nch) && !PET_CHARS.has(nch) && (nch !== 'd' || !hadPetBlock) && lowHp) continue;
+      if (MONSTERS.has(nch) && lowHp) continue;
 
       // Recent position penalty
       let recentPenalty = 0;
@@ -402,9 +409,10 @@
         const rp = recentPositions[i];
         if (rp.x === nx && rp.y === ny) recentPenalty += 5;
       }
-      // Pet penalty
-      if (PET_CHARS.has(nch) || (nch === 'd' && hadPetBlock)) {
+      // Pet penalty / block
+      if (MONSTERS.has(nch)) {
         if (stuckCount > 10) continue;
+        if (navCtx.petSwapBlocked) continue; // avoid pets when swaps are throttled
         recentPenalty += 20;
       }
 
@@ -415,7 +423,7 @@
       else if (nch === '.') tileBonus = 10;
       else if (nch === '<') tileBonus = 2;
       else if (nch === '#') tileBonus = 1;
-      else if (PET_CHARS.has(nch)) tileBonus = 2;
+      // Removed pet tile bonus
 
       const forwardBonus = stairs ? 6 : 3;
       if (lastMoveDir >= 0 && di === lastMoveDir) tileBonus += forwardBonus;
@@ -428,7 +436,7 @@
         if (ax < 0 || ax >= W || ay < 0 || ay >= H) break;
         const ach = (grid[ay]||'')[ax] || ' ';
         if (ach === '#') { corridorAhead++; continue; }
-        if (MONSTERS.has(ach) && !PET_CHARS.has(ach) && ach !== 'd' && lowHp) monsterAhead++;
+        if (MONSTERS.has(ach) && lowHp) monsterAhead++;
         break;
       }
       const score = tileBonus + corridorAhead * 3 - recentPenalty - monsterAhead * 15;
@@ -451,7 +459,7 @@
         const nx = player.x + dx, ny = player.y + dy;
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
-        if (isWalkable(ch) && !PET_CHARS.has(ch)) {
+        if (isWalkable(ch) && !MONSTERS.has(ch)) {
           navCtx.lastMoveDir = di;
           env.sendKey(KEY[di].charCodeAt(0));
           return true;
@@ -471,7 +479,7 @@
       }
     }
     if (nearestFloor) {
-      const next = bfs(player.x, player.y, nearestFloor.x, nearestFloor.y, grid, navCtx.openedDoors);
+      const next = bfs(player.x, player.y, nearestFloor.x, nearestFloor.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
       if (next) {
         const idx = DIRS.findIndex(([ddx,ddy]) => ddx===(next.x-player.x) && ddy===(next.y-player.y));
         if (idx >= 0) {

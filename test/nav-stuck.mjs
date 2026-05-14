@@ -23,6 +23,38 @@
     const { env, tickCount, stuckCount, wallSearchPhase,
             lastSentDir, lastMoveDir, knownTrapPositions, msgs } = navCtx;
 
+    // ---- Trap-caught detection: player is immobilized by a trap ----
+    // Bear traps and webs hold the player in place. The only way out is to
+    // keep trying to move (escape chance) or teleport. Detect this early
+    // so we don't waste ticks sending navigation keys toward distant targets.
+    const caughtInTrap = msgs.some(m => m.includes('caught in a bear trap') ||
+                                        m.includes('stuck in the web') ||
+                                        m.includes('bear trap closes'));
+    if (caughtInTrap) {
+      if (!navCtx._trapCaughtTick) navCtx._trapCaughtTick = tickCount;
+      const trappedFor = tickCount - navCtx._trapCaughtTick;
+      console.log(`[NAV] Player caught in trap for ${trappedFor} ticks`);
+      // Try to escape by moving in random directions
+      const shuffled = NH.shuffleDirs ? NH.shuffleDirs() : [0,1,2,3,4,5,6,7];
+      for (const di of shuffled) {
+        const [dx, dy] = NH.DIRS[di];
+        const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+        if (nx < 0 || nx >= NH.W || ny < 0 || ny >= NH.H) continue;
+        const ch = (navCtx.grid || [])[ny] ? (navCtx.grid[ny][nx] || ' ') : ' ';
+        if (NH.isWalkable(ch) && !NH.MONSTERS.has(ch)) {
+          navCtx.lastMoveDir = di;
+          env.sendKey(NH.KEY[di].charCodeAt(0));
+          return true;
+        }
+      }
+      // If stuck for too long in a trap, try teleport
+      if (trappedFor > 50 && navCtx.teleportAttempts < (NH.MAX_TELEPORT_ATTEMPTS || 3)) {
+        if (NH.tryTeleport && NH.tryTeleport(navCtx)) return true;
+      }
+    } else {
+      navCtx._trapCaughtTick = 0;
+    }
+
     // When wall search is active, don't intercept — let wall search/teleport handle it.
     // Handle stuck should only run as a last resort when other handlers have failed.
     if (wallSearchPhase && stuckCount < 500) {

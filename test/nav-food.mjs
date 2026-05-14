@@ -13,7 +13,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-food.js'); return; }
 
-  const { W, H, DIRS, KEY, bfs, scanMap, PET_CHARS, isBfsWalkable } = NH;
+  const { W, H, DIRS, KEY, bfs, scanMap, MONSTERS, isBfsWalkable } = NH;
 
   /**
    * BFS that avoids positions in a blocked set.
@@ -43,9 +43,9 @@
         if (!isBfsWalkable(ch)) continue;
         // Skip known trap/blocked positions
         if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
-        // Skip monsters (but allow target)
+        // Skip monsters and pets (but allow target)
         const { MONSTERS } = NH;
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
+        if (MONSTERS.has(ch) && !(nx === tx && ny === ty)) continue;
         visited[ny][nx] = 1;
         parent[ny][nx] = cur;
         queue.push({x: nx, y: ny});
@@ -100,7 +100,9 @@
     const isFainted = hungerTrimmed === 'Fainted';
 
     const nearestFood = findNearestFood(navCtx, player.x, player.y, grid);
-    const noFood = msgs.some(m => m.includes("don't have anything to eat"));
+    const noFood = msgs.some(m => m.includes("don't have anything to eat")) ||
+                   (navCtx.noFoodUntilTick && tickCount < navCtx.noFoodUntilTick);
+    const noFoodPersisted = navCtx.noFoodUntilTick && tickCount < navCtx.noFoodUntilTick;
 
     // Detect food at the player's feet from messages.
     // When standing on food (e.g. "You see here a lichen corpse"), the food character
@@ -123,16 +125,27 @@
       return false;
     });
 
+    // Detect sickness from bad food — avoid eating corpses for a while
+    const gotSick = msgs.some(m =>
+      m.includes('tainted') || m.includes('rotten') || m.includes('Ulch') ||
+      m.includes('sick') || m.includes('deathly sick') || m.includes('feel sick'));
+    if (gotSick) {
+      navCtx.avoidCorpsesUntilTick = tickCount + 500;
+      console.log(`[NAV] Got sick from food, avoiding corpses until tick ${navCtx.avoidCorpsesUntilTick}`);
+    }
+    const avoidCorpses = navCtx.avoidCorpsesUntilTick && tickCount < navCtx.avoidCorpsesUntilTick;
+
     // Fainting = LAST TICK before unconsciousness. Must eat NOW.
     // No cooldown, no waiting. But don't spam 'e' if we already got "no food" message.
     if (isFainting) {
-      if (!navCtx.choked && !noFood) {
+      if (!navCtx.choked && !noFood && !noFoodPersisted) {
         navCtx.lastEatTick = tickCount;
         console.log('[NAV] FAINTING — eating immediately (last chance before unconsciousness)');
         env.sendKey('e'.charCodeAt(0));
         return true;
       }
       // No food available or choked — wait for Fainted state
+      navCtx.lastMoveDir = -1;
       env.sendKey('.'.charCodeAt(0));
       return true;
     }
@@ -142,12 +155,13 @@
     // so the eat command processes before the pet re-grabs the food.
     // But only try every few ticks to avoid spamming.
     if (isFainted) {
-      if (!navCtx.choked && (tickCount - navCtx.lastEatTick) > 3) {
+      if (!navCtx.choked && !noFoodPersisted && (tickCount - navCtx.lastEatTick) > 3) {
         navCtx.lastEatTick = tickCount;
         console.log('[NAV] FAINTED — sending eat key in case just recovered');
         env.sendKey('e'.charCodeAt(0));
         return true;
       }
+      navCtx.lastMoveDir = -1;
       env.sendKey('.'.charCodeAt(0));
       return true;
     }
@@ -156,12 +170,14 @@
     // The food char is hidden under the player '@', so the map scanner misses it,
     // but we can still eat from the floor. Only eat when HUNGRY — eating when Satiated
     // triggers the choking mechanic and kills the player.
-    // NO eat cooldown for floor food — the food might be picked up by the pet at any
-    // moment, so we need to eat immediately when detected.
-    if (floorFoodMsg && isHungry && !navCtx.choked) {
+    // If we got sick from corpses before, avoid eating corpses unless fainting.
+    const floorHasCorpse = msgs.some(m => m.toLowerCase().includes('corpse'));
+    const canEatFloorFood = floorFoodMsg && isHungry && !navCtx.choked && !noFoodPersisted &&
+                            !(avoidCorpses && floorHasCorpse && !isFainting && !isFainted);
+    if (canEatFloorFood) {
       navCtx.lastEatTick = tickCount;
       navCtx.choked = false;
-      console.log('[NAV] Eating food at feet (from "You see here" msg)');
+      console.log('[NAV] Eating food at feet (from "You see here" msg)' + (avoidCorpses && floorHasCorpse ? ' — DESPERATE (fainting)' : ''));
       env.sendKey('e'.charCodeAt(0));
       return true;
     }
@@ -193,6 +209,11 @@
         const idx = DIRS.findIndex(([ddx,ddy]) =>
           ddx===dx && ddy===dy);
         if (idx >= 0) {
+          const nextCh = (grid[nearestFood.y]||'')[nearestFood.x] || ' ';
+          if (MONSTERS.has(nextCh)) {
+            // Pet is on the food tile — let handleBoulderPet deal with it
+            return false;
+          }
           navCtx.lastMoveDir = idx;
           env.sendKey(KEY[idx].charCodeAt(0));
           return true;
@@ -234,6 +255,11 @@
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===stepDx && ddy===stepDy);
             if (idx >= 0) {
+              const nextCh = (grid[next.y]||'')[next.x] || ' ';
+              if (MONSTERS.has(nextCh)) {
+                // Pet blocking path to food — let handleBoulderPet deal with it
+                return false;
+              }
               console.log(`[NAV] Navigating to food at ${nearestFood.x},${nearestFood.y} (hungry, dist=${foodDist})`);
               navCtx.lastMoveDir = idx;
               env.sendKey(KEY[idx].charCodeAt(0));
@@ -249,7 +275,7 @@
       // Diagonal moves in corridors are usually wall-cornering attempts; only approach in rooms
       const isDiagonalMove = (Math.abs(nearestFood.x - player.x) === 1 &&
                                Math.abs(nearestFood.y - player.y) === 1);
-      const shouldApproachFood = (!isHungry && foodDist <= 8 && !navCtx.wallSearchPhase && !isInCorridor) ||
+      let shouldApproachFood = (!isHungry && foodDist <= 8 && !navCtx.wallSearchPhase && !isInCorridor) ||
                                (isHungry && foodDist > 8);
       if (shouldApproachFood) {
         const blocked = knownTrapPositions || new Set();
@@ -276,6 +302,11 @@
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===stepDx && ddy===stepDy);
             if (idx >= 0) {
+              const nextCh = (grid[next.y]||'')[next.x] || ' ';
+              if (MONSTERS.has(nextCh)) {
+                // Pet blocking path to food — let handleBoulderPet deal with it
+                return false;
+              }
               console.log(`[NAV] Approaching food at ${nearestFood.x},${nearestFood.y} (dist=${foodDist}, hungry=${isHungry})`);
               navCtx.lastMoveDir = idx;
               env.sendKey(KEY[idx].charCodeAt(0));
@@ -291,7 +322,7 @@
     // This avoids eating rotten corpses from inventory (which cause sickness).
     const isStarving = hungerTrimmed === 'Weak' || hungerTrimmed === 'Fainting' ||
                        hungerTrimmed === 'Fainted';
-    if (isHungry && isStarving && !noFood && (tickCount - navCtx.lastEatTick) > 5) {
+    if (isHungry && isStarving && !noFood && !noFoodPersisted && (tickCount - navCtx.lastEatTick) > 5) {
       navCtx.lastEatTick = tickCount;
       console.log(`[NAV] Trying to eat from inventory (status=${hungerTrimmed})`);
       env.sendKey('e'.charCodeAt(0));
@@ -301,7 +332,7 @@
     // Starving with no food at all — try prayer as last resort.
     // In NetHack, praying while starving can produce food from your god.
     // Only try once every ~1000 ticks to avoid angering the god.
-    if (isHungry && noFood && !nearestFood && (tickCount - (navCtx.lastPrayTick || -1000)) > 1000) {
+    if (isHungry && noFood && !nearestFood && !noFoodPersisted && (tickCount - (navCtx.lastPrayTick || -1000)) > 1000) {
       navCtx.lastPrayTick = tickCount;
       // No pendingPray needed — just send the full prayer sequence directly.
       // NetHack extended command: #pray followed by <CR>

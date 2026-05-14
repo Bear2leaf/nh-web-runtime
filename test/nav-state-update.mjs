@@ -27,7 +27,7 @@
 
     if (!navCtx.player) return;
 
-    navCtx.msgs = navCtx.env.getRecentMessages(15);
+    navCtx.msgs = navCtx.env.getRecentMessages(30);
 
     // Detect leg injury (can't kick anymore)
     if (navCtx.msgs.some(m => m.includes('in no shape for kicking'))) {
@@ -75,23 +75,38 @@
     // Detect pet blocking from recent messages
     const sawPetSwap = navCtx.msgs.some(m => m.includes('swap places with'));
     const sawPetBlockMsg = navCtx.msgs.some(m => m.includes('is in the way'));
-    navCtx.hadPetBlock = sawPetSwap || sawPetBlockMsg;
+    const sawPetRefuseSwap = navCtx.msgs.some(m => m.includes("doesn't want to swap places"));
+    navCtx.hadPetBlock = sawPetSwap || sawPetBlockMsg || sawPetRefuseSwap;
 
-    // Track consecutive ticks with pet swap messages.
-    // Swap messages linger in the 15-message buffer, so a single swap may count
-    // for 2-3 ticks. We decay slowly (subtract 1 per tick without swap) so that
-    // genuine swap loops accumulate quickly while occasional swaps don't block.
-    if (sawPetSwap) {
-      navCtx.consecutivePetSwaps = (navCtx.consecutivePetSwaps || 0) + 1;
-    } else {
-      navCtx.consecutivePetSwaps = Math.max(0, (navCtx.consecutivePetSwaps || 0) - 1);
+    // Track pet position from swap/block messages (use NEW messages only)
+    // Compare current buffer with previous to detect genuinely new events
+    const prevSwapCount = navCtx._prevSwapMsgCount || 0;
+    const currentSwapCount = navCtx.msgs.filter(m =>
+      m.includes('swap places with') || m.includes('is in the way') || m.includes("doesn't want to swap places")
+    ).length;
+    const newSwapEvents = Math.max(0, currentSwapCount - prevSwapCount);
+    navCtx._prevSwapMsgCount = currentSwapCount;
+
+    if (newSwapEvents > 0 && navCtx.lastMoveDir >= 0) {
+      const [dx, dy] = DIRS[navCtx.lastMoveDir];
+      // Determine pet position from the most recent swap/block message
+      const lastSwapMsg = navCtx.msgs.slice().reverse().find(m =>
+        m.includes('swap places with') || m.includes('is in the way') || m.includes("doesn't want to swap places")
+      );
+      if (lastSwapMsg && lastSwapMsg.includes('swap places with')) {
+        navCtx.petPosition = { x: navCtx.player.x - dx, y: navCtx.player.y - dy };
+      } else {
+        navCtx.petPosition = { x: navCtx.player.x + dx, y: navCtx.player.y + dy };
+      }
+      navCtx.petPositionTick = navCtx.tickCount;
     }
-    // Block pet swaps after ~8 ticks with swap messages (~3-4 actual swaps)
-    const wasBlocked = navCtx.petSwapBlocked;
-    navCtx.petSwapBlocked = navCtx.consecutivePetSwaps > 8;
-    if (navCtx.petSwapBlocked && !wasBlocked) {
-      console.log(`[NAV] Blocking pet swaps after ${navCtx.consecutivePetSwaps} swap ticks — pet is blocking the path`);
+    // Clear stale pet position after 60 ticks without interaction
+    if (navCtx.petPositionTick && navCtx.tickCount - navCtx.petPositionTick > 60) {
+      navCtx.petPosition = null;
+      navCtx.petPositionTick = 0;
     }
+
+    // (Pet swap throttle counter moved below, after position tracking)
 
     // Track recent positions for oscillation detection
     navCtx.recentPositions.push({x: navCtx.player.x, y: navCtx.player.y});
@@ -106,6 +121,12 @@
       navCtx.corridorVisitCounts.clear();
       navCtx.corridorOscillationTick = 0;
     }
+
+    // ---- Pet swap throttle: DISABLED ----
+    // Previous approaches (cooldown, direction-counting, position-based) all
+    // caused either excessive waiting (max-ticks) or failed to prevent loops.
+    // Pet blocking is now handled locally by corridor and boulder-pet handlers.
+    navCtx.petSwapBlocked = false;
 
     // Read HP & hunger
     navCtx.currentHp = navCtx.env.getHp();
@@ -132,6 +153,11 @@
       }
     }
 
+    // Persist "no food" state so handlers don't spam 'e' after the message drops from buffer
+    if (navCtx.msgs.some(m => m.includes("don't have anything to eat"))) {
+      navCtx.noFoodUntilTick = navCtx.tickCount + 150;
+    }
+
     // Detect unpushable boulders from failure messages
     if (navCtx.msgs.some(m => m.includes('but in vain'))) {
       // Find adjacent boulder and mark it as failed
@@ -153,15 +179,52 @@
 
     // Detect trap positions from "Really step" messages (trap was avoided by shim saying 'n')
     // NetHack messages: "Really step into that pit?" / "Really step onto that bear trap?"
-    const trapMsg = navCtx.msgs.find(m => m.includes('Really step'));
-    if (trapMsg && navCtx.lastMoveDir >= 0) {
-      const [dx, dy] = DIRS[navCtx.lastMoveDir];
-      const trapX = navCtx.player.x + dx;
-      const trapY = navCtx.player.y + dy;
-      const key = trapX + ',' + trapY;
-      if (!navCtx.knownTrapPositions.has(key)) {
-        navCtx.knownTrapPositions.add(key);
-        console.log(`[NAV] Discovered trap at ${trapX},${trapY} (from Really step msg), total=${navCtx.knownTrapPositions.size}`);
+    const trapMsg = navCtx.msgs.find(m => m.includes('Really step') || m.includes('Step into') || m.includes('step into') || m.includes('avoid stepping'));
+    if (trapMsg) {
+      console.log(`[NAV-TRAP] Detected trap message: "${trapMsg.substring(0, 60)}" lastMoveDir=${navCtx.lastMoveDir} knownTraps=${navCtx.knownTrapPositions.size}`);
+      if (navCtx.lastMoveDir >= 0) {
+        const [dx, dy] = DIRS[navCtx.lastMoveDir];
+        // For diagonal moves, the trap could be on either cardinal tile the move passes through.
+        // Mark all possible trap positions to be safe.
+        const trapPositions = [];
+        if (Math.abs(dx) === 1 && Math.abs(dy) === 1) {
+          trapPositions.push({x: navCtx.player.x + dx, y: navCtx.player.y});
+          trapPositions.push({x: navCtx.player.x, y: navCtx.player.y + dy});
+        }
+        trapPositions.push({x: navCtx.player.x + dx, y: navCtx.player.y + dy});
+        for (const tp of trapPositions) {
+          const key = tp.x + ',' + tp.y;
+          if (!navCtx.knownTrapPositions.has(key)) {
+            navCtx.knownTrapPositions.add(key);
+            console.log(`[NAV] Discovered trap at ${tp.x},${tp.y} (from Really step msg, dir=${navCtx.lastMoveDir}), total=${navCtx.knownTrapPositions.size}`);
+          }
+        }
+      } else {
+        // Fallback: lastMoveDir not set (handler sent key without setting it).
+        // Mark ALL adjacent tiles as potential traps to be safe.
+        // We mark even non-walkable tiles because visible traps (^) are not walkable
+        // but BFS already avoids them. The key case is invisible traps that appear
+        // as floor/corridor — but marking all adjacent tiles is the safest fallback.
+        for (const [dx, dy] of DIRS) {
+          const tx = navCtx.player.x + dx, ty = navCtx.player.y + dy;
+          if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
+          const key = tx + ',' + ty;
+          if (!navCtx.knownTrapPositions.has(key)) {
+            navCtx.knownTrapPositions.add(key);
+            console.log(`[NAV] Discovered trap at ${tx},${ty} (fallback, lastMoveDir=-1), total=${navCtx.knownTrapPositions.size}`);
+          }
+        }
+      }
+    }
+
+    // Detect wall-hitting loops — if the player keeps walking into walls, reset lastMoveDir
+    // so that oscillation/stuck detection can kick in and force a different direction.
+    if (navCtx.msgs.some(m => m.includes('harmlessly attack') || m.includes('attack the wall') ||
+                              m.includes('attack the stone') || m.includes('It\'s a wall'))) {
+      if (navCtx.lastMoveDir >= 0) {
+        console.log(`[NAV] Wall hit detected in dir=${navCtx.lastMoveDir}, resetting movement direction`);
+        navCtx.lastMoveDir = -1;
+        navCtx.sentDirCount = 0;
       }
     }
 
@@ -185,12 +248,7 @@
       navCtx.doorAttemptCount = 0;
       navCtx._stuckTargetTicks = 0;
       navCtx._stuckTargetKey = null;
-      // Clear lastStairsPos when player moves away — avoid stale reference
-      if (navCtx.lastStairsPos &&
-          (navCtx.player.x !== navCtx.lastStairsPos.x ||
-           navCtx.player.y !== navCtx.lastStairsPos.y)) {
-        navCtx.lastStairsPos = null;
-      }
+      navCtx.petSwapConsecutive = 0;
     } else {
       // Always track stuck count, even during wall search
       navCtx.stuckCount++;

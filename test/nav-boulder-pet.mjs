@@ -16,7 +16,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-boulder-pet.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, bfs } = NH;
+  const { W, H, DIRS, KEY, MONSTERS, bfs } = NH;
 
   /**
    * Handle boulder pushing and pet blocking.
@@ -61,6 +61,7 @@
           // Can push into empty corridor floor or room floor
           if (pushCh === '#' || pushCh === '.' || pushCh === ' ' || pushCh === '>') {
             // Try to push the boulder
+            navCtx.lastMoveDir = di;
             env.sendKey(KEY[di].charCodeAt(0));
             return true;
           }
@@ -82,6 +83,7 @@
         if (failCount < 2) {
           navCtx.boulderFailCount = navCtx.boulderFailCount || {};
           navCtx.boulderFailCount[failKey] = failCount + 1;
+          navCtx.lastMoveDir = di;
           env.sendKey(KEY[di].charCodeAt(0));
           return true;
         }
@@ -95,16 +97,20 @@
       const next = path[0];
       const nch = (grid[next.y]||'')[next.x] || ' ';
       if (nch === '`') {
-        // Boulder blocking path to stairs — try to push it
-        const dx = next.x - player.x, dy = next.y - player.y;
-        const di = DIRS.findIndex(([ddx,ddy]) => ddx===dx && ddy===dy);
-        if (di >= 0) {
-          const pushX = next.x + dx, pushY = next.y + dy;
-          if (pushX >= 0 && pushX < W && pushY >= 0 && pushY < H) {
-            const pushCh = (grid[pushY]||'')[pushX] || ' ';
-            if (pushCh === '#' || pushCh === '.' || pushCh === ' ') {
-              env.sendKey(KEY[di].charCodeAt(0));
-              return true;
+        const bKey = next.x + ',' + next.y;
+        if (!navCtx.failedBoulders.has(bKey)) {
+          // Boulder blocking path to stairs — try to push it
+          const dx = next.x - player.x, dy = next.y - player.y;
+          const di = DIRS.findIndex(([ddx,ddy]) => ddx===dx && ddy===dy);
+          if (di >= 0) {
+            const pushX = next.x + dx, pushY = next.y + dy;
+            if (pushX >= 0 && pushX < W && pushY >= 0 && pushY < H) {
+              const pushCh = (grid[pushY]||'')[pushX] || ' ';
+              if (pushCh === '#' || pushCh === '.' || pushCh === ' ') {
+                navCtx.lastMoveDir = di;
+                env.sendKey(KEY[di].charCodeAt(0));
+                return true;
+              }
             }
           }
         }
@@ -121,7 +127,7 @@
         const nx = player.x + dx, ny = player.y + dy;
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         const nch = (grid[ny]||'')[nx] || ' ';
-        if (PET_CHARS.has(nch)) { petPos = {x: nx, y: ny, di}; break; }
+        if (MONSTERS.has(nch)) { petPos = {x: nx, y: ny, di}; break; }
       }
       if (petPos) {
         // Try to move around the pet (perpendicular directions)
@@ -134,7 +140,8 @@
           const px = player.x + pdx, py = player.y + pdy;
           if (px < 0 || px >= W || py < 0 || py >= H) continue;
           const pch = (grid[py]||'')[px] || ' ';
-          if (isWalkable(pch) && !MONSTERS.has(pch)) {
+          if (NH.isWalkable(pch) && !MONSTERS.has(pch) && !navCtx.knownTrapPositions.has(px + ',' + py)) {
+            navCtx.lastMoveDir = pdi;
             env.sendKey(KEY[pdi].charCodeAt(0));
             return true;
           }
@@ -148,11 +155,7 @@
     return false;
   }
 
-  function isWalkable(ch) {
-    if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) return false;
-    if (ch === '|' || ch === '-' || ch === ' ' || ch === '`') return false;
-    return true;
-  }
+  // Use NH.isWalkable for consistency
 
   function rotateCW(di) { return (di + 1) % 8; }
   function rotateCCW(di) { return (di + 7) % 8; }

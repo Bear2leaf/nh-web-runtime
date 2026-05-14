@@ -34,7 +34,8 @@
     // Fainting = LAST TICK before unconsciousness. Eat immediately, no cooldown.
     // This is critical — if we let the player slip into Fainted, NetHack ignores 'e'.
     // But don't spam 'e' if we already got "no food" message.
-    const noFood = msgs.some(m => m.includes("don't have anything to eat"));
+    const noFood = msgs.some(m => m.includes("don't have anything to eat")) ||
+                   (navCtx.noFoodUntilTick && tickCount < navCtx.noFoodUntilTick);
     if (hungerTrimmed === 'Fainting') {
       if (!navCtx.choked && !noFood) {
         navCtx.lastEatTick = tickCount;
@@ -43,18 +44,21 @@
         return true;
       }
       // No food available or choked — will transition to Fainted next
+      navCtx.lastMoveDir = -1;
       env.sendKey('.'.charCodeAt(0));
       return true;
     }
 
     // Fainted = unconscious. NetHack ignores all input keys.
     // Try 'e' every few ticks in case we JUST recovered this tick.
+    // Don't update lastEatTick — the 'e' is likely ignored while fainted,
+    // and updating it would reset the cooldown, delaying eating after recovery.
     if (hungerTrimmed === 'Fainted') {
       if (!navCtx.choked && !noFood && (tickCount - navCtx.lastEatTick) > 3) {
-        navCtx.lastEatTick = tickCount;
         env.sendKey('e'.charCodeAt(0));
         return true;
       }
+      navCtx.lastMoveDir = -1;
       env.sendKey('.'.charCodeAt(0));
       return true;
     }
@@ -72,6 +76,8 @@
     if (justChoked) navCtx.choked = true;
 
     // Eat when hungry/weak/fainting
+    // If we recently learned there's no food, don't spam 'e' — wait for floor food or new items
+    const noFoodPersisted = navCtx.noFoodUntilTick && tickCount < navCtx.noFoodUntilTick;
     // During wall search, only eat when Weak — Hungry can wait until
     // wall search finishes or finds something. Wall search is time-critical.
     const isWeak = hungerTrimmed === 'Weak';
@@ -84,7 +90,7 @@
     if (navCtx.choked && hungerTrimmed !== 'Satiated') {
       navCtx.choked = false;
     }
-    const shouldEat = isHungryCombined && !noFood && !navCtx.choked &&
+    const shouldEat = isHungryCombined && !noFood && !noFoodPersisted && !navCtx.choked &&
                       (tickCount - navCtx.lastEatTick) > eatCooldown &&
                       (!wallSearchActive || isWeak);
     if (shouldEat) {

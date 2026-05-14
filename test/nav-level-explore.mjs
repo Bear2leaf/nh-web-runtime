@@ -18,7 +18,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-level-explore.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable,
+  const { W, H, DIRS, KEY, MONSTERS, isWalkable, isBfsWalkable,
           bfs, bfsAvoiding, scanMap } = NH;
 
   /**
@@ -80,11 +80,12 @@
         const ddx = nearestUntriedDoor.x - player.x;
         const ddy = nearestUntriedDoor.y - player.y;
         if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {
-          const idx = DIRS.findIndex(([ddx,ddy]) => ddx===ddx && ddy===ddy);
+          const idx = DIRS.findIndex(([dx,dy]) => dx===ddx && dy===ddy);
           if (idx >= 0) {
             const doorKey = nearestUntriedDoor.x + ',' + nearestUntriedDoor.y;
             if (navCtx.triedDoors.has(doorKey)) return false;
             console.log(`[NAV] Level-explore: opening untried door at ${doorKey}`);
+            navCtx.lastMoveDir = idx;
             env.sendKey('o'.charCodeAt(0));
             navCtx.pendingDir = idx;
             return true;
@@ -104,7 +105,7 @@
               return true;
             }
           }
-          if (!PET_CHARS.has(nch)) {
+          if (!MONSTERS.has(nch)) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0) {
@@ -128,16 +129,20 @@
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
           if (nch === '`') {
-            // Boulder in path — try to push it
-            const dx = next.x - player.x, dy = next.y - player.y;
-            const di = DIRS.findIndex(([ddx,ddy]) => ddx===dx && ddy===dy);
-            if (di >= 0) {
-              const pushX = next.x + dx, pushY = next.y + dy;
-              if (pushX >= 0 && pushX < W && pushY >= 0 && pushY < H) {
-                const pushCh = (grid[pushY]||'')[pushX] || ' ';
-                if (pushCh === '#' || pushCh === '.' || pushCh === ' ') {
-                  env.sendKey(KEY[di].charCodeAt(0));
-                  return true;
+            const bKey = next.x + ',' + next.y;
+            if (!navCtx.failedBoulders || !navCtx.failedBoulders.has(bKey)) {
+              // Boulder in path — try to push it
+              const dx = next.x - player.x, dy = next.y - player.y;
+              const di = DIRS.findIndex(([ddx,ddy]) => ddx===dx && ddy===dy);
+              if (di >= 0) {
+                const pushX = next.x + dx, pushY = next.y + dy;
+                if (pushX >= 0 && pushX < W && pushY >= 0 && pushY < H) {
+                  const pushCh = (grid[pushY]||'')[pushX] || ' ';
+                  if (pushCh === '#' || pushCh === '.' || pushCh === ' ') {
+                    navCtx.lastMoveDir = di;
+                    env.sendKey(KEY[di].charCodeAt(0));
+                    return true;
+                  }
                 }
               }
             }
@@ -148,12 +153,13 @@
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0 && !navCtx.triedDoors.has(next.x + ',' + next.y)) {
               console.log(`[NAV] Level-explore: opening door at ${next.x},${next.y}`);
+              navCtx.lastMoveDir = idx;
               env.sendKey('o'.charCodeAt(0));
               navCtx.pendingDir = idx;
               return true;
             }
           }
-          if (!PET_CHARS.has(nch) || !(nch === 'd' && navCtx.hadPetBlock)) {
+          if (!MONSTERS.has(nch)) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0) {
@@ -196,12 +202,13 @@
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0 && !navCtx.triedDoors.has(next.x + ',' + next.y)) {
               console.log(`[NAV] Level-explore (corridor): opening door at ${next.x},${next.y}`);
+              navCtx.lastMoveDir = idx;
               env.sendKey('o'.charCodeAt(0));
               navCtx.pendingDir = idx;
               return true;
             }
           }
-          if (!PET_CHARS.has(nch)) {
+          if (!MONSTERS.has(nch)) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0) {
@@ -259,7 +266,7 @@
         const next = bfsAvoiding(player.x, player.y, bestJunction.x, bestJunction.y, grid, blocked, navCtx.openedDoors);
         if (next) {
           const nch = (grid[next.y]||'')[next.x] || ' ';
-          if (!PET_CHARS.has(nch)) {
+          if (!MONSTERS.has(nch)) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
             if (idx >= 0) {
@@ -274,6 +281,7 @@
 
     // ---- Stuck: try waiting a few ticks to let pets move ----
     if (stuckCount > 3) {
+      navCtx.lastMoveDir = -1;
       env.sendKey('.'.charCodeAt(0));
       return true;
     }

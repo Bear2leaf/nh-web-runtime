@@ -12,7 +12,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-combat.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, shuffleDirs } = NH;
+  const { W, H, DIRS, KEY, MONSTERS, isWalkable, shuffleDirs } = NH;
 
   /**
    * Handle combat: fight adjacent monsters directly, including invisible ones.
@@ -28,6 +28,8 @@
     }
 
     // Check all 8 directions for adjacent hostile monsters
+    // Skip the known pet position to avoid swap loops / attacking our own pet
+    const knownPet = navCtx.petPosition;
     let adjHostile = null;
     for (let di = 0; di < 8; di++) {
       const [ddx, ddy] = DIRS[di];
@@ -35,8 +37,10 @@
       if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
       const ch = (grid[ny]||'')[nx] || ' ';
       if (MONSTERS.has(ch)) {
-        // Skip pets — don't attack them
-        if (PET_CHARS.has(ch)) continue;
+        // Skip known pet position
+        if (knownPet && nx === knownPet.x && ny === knownPet.y) {
+          continue;
+        }
         adjHostile = { x: nx, y: ny, ch, di };
         break;
       }
@@ -44,11 +48,12 @@
 
     // If adjacent hostile monster, attack it (or kite if very low HP)
     if (adjHostile) {
-      const maxHp = env.getMaxHp ? env.getMaxHp() : (player.maxHp || 20);
-      const hpPercent = maxHp > 0 ? (player.hp / maxHp) : 1;
+      const currentHp = navCtx.currentHp || player.hp || 10;
+      const maxHp = navCtx.maxHp || env.getMaxHp ? env.getMaxHp() : 10;
+      const hpPercent = maxHp > 0 ? (currentHp / maxHp) : 1;
       
-      // Kite: if HP < 35% and we can retreat to a safe tile, try to back away
-      if (hpPercent < 0.35) {
+      // Kite: if HP < 60% and we can retreat to a safe tile, try to back away
+      if (hpPercent < 0.6) {
         // Find a retreat direction (not towards any monster, walkable, no trap)
         const monsterDirs = new Set();
         for (let di = 0; di < 8; di++) {
@@ -56,7 +61,7 @@
           const nx = player.x + ddx, ny = player.y + ddy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (grid[ny]||'')[nx] || ' ';
-          if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) {
+          if (MONSTERS.has(ch)) {
             monsterDirs.add(di);
           }
         }
@@ -68,7 +73,7 @@
           const rch = (grid[ry]||'')[rx] || ' ';
           if (isWalkable(rch) && !MONSTERS.has(rch) && !monsterDirs.has(retreatDi)) {
             if (!navCtx.knownTrapPositions || !navCtx.knownTrapPositions.has(rx + ',' + ry)) {
-              console.log(`[NAV] Kiting: retreating dir=${retreatDi} from ${adjHostile.ch} at low HP ${player.hp}/${maxHp}`);
+              console.log(`[NAV] Kiting: retreating dir=${retreatDi} from ${adjHostile.ch} at low HP ${currentHp}/${maxHp}`);
               navCtx.lastMoveDir = retreatDi;
               env.sendKey(KEY[retreatDi].charCodeAt(0));
               return true;
@@ -104,22 +109,33 @@
     }
 
     // Invisible monster attack: "It bites!" / "It hits!" messages mean invisible monster on our tile
-    // Force-fight in a random direction to hit it
+    // Force-fight in a random direction to hit it.
+    // Also catch named monsters that attack but may not be visible on the map due to async
+    // display timing — if adjHostile is null but messages show a monster attacking us,
+    // force-fight to defend ourselves.
+    const namedAttack = navCtx.msgs.some(m => /The \w+ (bites|hits|misses|stings)!/.test(m) || /The \w+ just misses!/.test(m));
     const invisibleHitMsg = navCtx.msgs.some(m =>
       m.includes('It bites!') || m.includes('It hits!') ||
       m.includes('It stings!') || m.includes('It claws!')
     );
     const onTileCooldown = navCtx.lastOnTileTick && (tickCount - navCtx.lastOnTileTick) < 5;
-    if (invisibleHitMsg && !onTileCooldown) {
+    if ((invisibleHitMsg || (namedAttack && !adjHostile)) && !onTileCooldown) {
       navCtx.lastOnTileTick = tickCount;
-      // Try force-fight in random direction to hit invisible monster
+      // Monster is attacking but not visible on map (async display timing).
+      // Walk in a random safe direction instead of force-fighting — walking into
+      // the monster will attack it, and if we miss, we at least don't hit walls.
       const shuffled = shuffleDirs();
-      const fightDir = shuffled[0];
-      const [ddx, ddy] = DIRS[fightDir];
-      navCtx.lastMoveDir = fightDir;
-      env.sendKey('F'.charCodeAt(0)); // Force fight
-      navCtx.pendingDir = fightDir;
-      return true;
+      for (const di of shuffled) {
+        const [ddx, ddy] = DIRS[di];
+        const nx = player.x + ddx, ny = player.y + ddy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        const ch = (grid[ny]||'')[nx] || ' ';
+        if (isWalkable(ch) && !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+          navCtx.lastMoveDir = di;
+          env.sendKey(KEY[di].charCodeAt(0));
+          return true;
+        }
+      }
     }
 
     return false;

@@ -22,11 +22,13 @@
     const { env, pendingDir, pendingKickDir } = navCtx;
     if (pendingDir !== null) {
       navCtx.pendingDir = null;
+      navCtx.lastMoveDir = pendingDir;
       env.sendKey(KEY[pendingDir].charCodeAt(0));
       return true;
     }
     if (pendingKickDir !== null) {
       navCtx.pendingKickDir = null;
+      navCtx.lastMoveDir = pendingKickDir;
       env.sendKey(KEY[pendingKickDir].charCodeAt(0));
       return true;
     }
@@ -93,7 +95,7 @@
         return true;
       }
       // Trap prompt: decline stepping onto known trap, mark trap position
-      if (ynText.includes('Really step')) {
+      if (ynText.includes('Really step') || ynText.includes('Step into') || ynText.toLowerCase().includes('step into')) {
         env.sendKey('n'.charCodeAt(0));
         // Mark trap position so pathfinding avoids it
         let trapDir = navCtx.lastMoveDir;
@@ -131,10 +133,6 @@
         env.sendKey('n'.charCodeAt(0));
         return true;
       }
-      // Catch-all for unknown YN prompts — default to no (safer)
-      env.sendKey('n'.charCodeAt(0));
-      console.log(`[NAV-MODAL] Unknown YN prompt: ${ynText.slice(0, 80)} — defaulting to no`);
-      return true;
       // Teleport confirmation: accept default
       if (ynText.toLowerCase().includes('teleport') || ynText.toLowerCase().includes('where')) {
         env.sendKey('y'.charCodeAt(0));
@@ -147,6 +145,10 @@
       }
       // Generic Y/N: prefer yes
       if (!env.clickYnButton()) env.sendKey(121);
+      return true;
+      // Catch-all for unknown YN prompts — default to no (safer)
+      env.sendKey('n'.charCodeAt(0));
+      console.log(`[NAV-MODAL] Unknown YN prompt: ${ynText.slice(0, 80)} — defaulting to no`);
       return true;
     }
 

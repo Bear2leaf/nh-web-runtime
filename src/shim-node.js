@@ -585,8 +585,10 @@ export async function nethackShimCallback(name, ...args) {
         let autoChar;
         if (query.toLowerCase().includes('pick') || query.toLowerCase().includes('select') || query.toLowerCase().includes('swap places')) {
             autoChar = 'y'.charCodeAt(0);
-        } else if (query.includes('Really step')) {
+        } else if (query.includes('Really step') || query.includes('Step into') || query.toLowerCase().includes('step into')) {
             autoChar = 'n'.charCodeAt(0); // Don't step on traps
+        } else if (query.toLowerCase().includes('pray') || query.toLowerCase().includes('teleport')) {
+            autoChar = 'y'.charCodeAt(0);
         } else if (query.toLowerCase().includes('eat it') || query.toLowerCase().includes('eat that') || query.toLowerCase().includes('eat one')) {
             // "There is a lichen corpse here; eat it?" / "eat one?" — YES, we're starving!
             log('yn_function: eat floor item prompt, answering YES');

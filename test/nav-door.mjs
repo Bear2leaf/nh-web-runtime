@@ -16,7 +16,7 @@
 
   const { W, H, DIRS, KEY, bfs } = NH;
 
-  const MAX_KICK_ATTEMPTS = 5;
+  const MAX_KICK_ATTEMPTS = 10;
   const MAX_OPEN_ATTEMPTS = 1;
 
   /**
@@ -86,6 +86,32 @@
       return false;
     }
 
+    // If there's an adjacent hostile monster, don't waste ticks on doors — combat
+    // has higher priority and the player could die while kicking.
+    for (let di = 0; di < 8; di++) {
+      const [ddx, ddy] = DIRS[di];
+      const nx = player.x + ddx, ny = player.y + ddy;
+      if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+      const ch = (grid[ny]||'')[nx] || ' ';
+      if (NH.MONSTERS.has(ch)) {
+        return false; // Let combat handle it
+      }
+    }
+
+    // Detect "kick at empty space" from previous kick — mark door as tried
+    if (navCtx.msgs.some(m => m.includes('kick at empty space'))) {
+      for (const door of untriedDoors) {
+        const ddx = door.x - player.x, ddy = door.y - player.y;
+        if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {
+          const doorKey = door.x + ',' + door.y;
+          if (!triedDoors.has(doorKey)) {
+            triedDoors.add(doorKey);
+            console.log(`[NAV] Door ${doorKey} caused 'kick at empty space', marking as tried`);
+          }
+        }
+      }
+    }
+
     let bestDoor = null, bestNext = null, bestDist = Infinity;
 
     for (const door of untriedDoors) {
@@ -94,28 +120,37 @@
 
       // Adjacent door — try to open it
       if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {
-        if (navCtx.lastDoorPos === doorKey) {
-          navCtx.doorOpenAttempts++;
-        } else {
-          navCtx.lastDoorPos = doorKey;
-          navCtx.doorOpenAttempts = 1;
+        // Verify the door is still '+' on the map — it may have been opened/broken
+        // by a monster or a previous kick that we missed.
+        const actualCh = (grid[door.y]||'')[door.x] || ' ';
+        if (actualCh !== '+') {
+          triedDoors.add(doorKey);
+          navCtx.doorOpenAttempts = 0;
+          navCtx.lastDoorPos = null;
+          console.log(`[NAV] Door at ${doorKey} is no longer '+', marking as tried`);
+          continue;
         }
 
+        // Per-door attempt tracking so targeting a different door doesn't reset progress
+        if (!navCtx.doorOpenAttemptsMap) navCtx.doorOpenAttemptsMap = new Map();
+        const prevAttempts = navCtx.doorOpenAttemptsMap.get(doorKey) || 0;
+        navCtx.doorOpenAttemptsMap.set(doorKey, prevAttempts + 1);
+        const doorOpenAttempts = prevAttempts + 1;
+
         // Locked after multiple open attempts — try kicking
-        if (navCtx.doorOpenAttempts > MAX_OPEN_ATTEMPTS) {
+        if (doorOpenAttempts > MAX_OPEN_ATTEMPTS) {
           const kickCount = navCtx.kickAttempts.get(doorKey) || 0;
           if (kickCount >= MAX_KICK_ATTEMPTS) {
-            // Exhausted all kick attempts — mark as tried
+            // Exhausted all kick attempts — mark as tried and trigger wall search immediately
             triedDoors.add(doorKey);
-            navCtx.doorOpenAttempts = 0;
-            navCtx.lastDoorPos = null;
-            console.log(`[NAV] Door at ${doorKey} still locked after ${MAX_KICK_ATTEMPTS} kicks, giving up`);
+            navCtx.doorOpenAttemptsMap.set(doorKey, 0);
+            navCtx.enclosedTick = Math.max(navCtx.enclosedTick, 100);
+            console.log(`[NAV] Door at ${doorKey} still locked after ${MAX_KICK_ATTEMPTS} kicks, giving up — forcing wall search`);
             continue;
           }
           if (legInjured) {
             triedDoors.add(doorKey);
-            navCtx.doorOpenAttempts = 0;
-            navCtx.lastDoorPos = null;
+            navCtx.doorOpenAttemptsMap.set(doorKey, 0);
             console.log(`[NAV] Door at ${doorKey} is locked, leg injured — giving up`);
             continue;
           }
@@ -137,7 +172,7 @@
       }
 
       // Non-adjacent door — BFS to it
-      const next = bfs(player.x, player.y, door.x, door.y, grid, navCtx.openedDoors);
+      const next = bfs(player.x, player.y, door.x, door.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
       if (next) {
         const dist = Math.abs(door.x - player.x) + Math.abs(door.y - player.y);
         if (dist < bestDist) { bestDist = dist; bestDoor = door; bestNext = next; }
@@ -157,7 +192,7 @@
       }
       const idx = DIRS.findIndex(([ddx,ddy]) =>
         ddx===(bestNext.x-player.x) && ddy===(bestNext.y-player.y));
-      if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+      if (idx >= 0) { navCtx.lastMoveDir = idx; env.sendKey(KEY[idx].charCodeAt(0)); return true; }
     }
 
     return false;

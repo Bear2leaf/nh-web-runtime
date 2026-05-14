@@ -89,6 +89,11 @@ async function createModule() {
 async function runOneTrial(trialNum, totalTrials) {
     console.log(`[WORKER] runOneTrial(${trialNum}) starting...`);
 
+    // Stagger starts to avoid seed clustering: NetHack seeds from the
+    // current time (second granularity), so workers starting in the same
+    // second get the same map. Use trialNum to spread across seconds.
+    await new Promise(r => setTimeout(r, (trialNum % 10) * 1200 + Math.random() * 500));
+
     // Create a fresh module instance for every trial to avoid Asyncify
     // state corruption from prior games.
     const mod = await createModule();
@@ -165,7 +170,7 @@ async function runOneTrial(trialNum, totalTrials) {
             clearInterval(counterCheckId);
             console.log(`[SINGLE] trial=${trialNum}/${totalTrials} result=max-ticks code=124`);
             resolve({ reason: 'max-ticks', code: 124, hp: '?', lastMsgs: [] });
-        }, 5 * 60 * 1000);
+        }, 2 * 60 * 1000);
     });
 }
 

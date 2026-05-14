@@ -13,7 +13,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-wall-search.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable,
+  const { W, H, DIRS, KEY, MONSTERS, isWalkable, isBfsWalkable,
           bfs, scanMap, findOnMap, shuffleDirs, tryTeleport, buildWallFollowPath,
           isAdjacentToWall, findNearestUnsearchedWall } = NH;
 
@@ -125,8 +125,9 @@
     }
 
     // Give up wall search if mostly searched
-    if ((navCtx.enclosedTick > 500 && navCtx.wallFollowPasses >= 2 && ratio >= 0.5) ||
-        (navCtx.wallFollowPasses >= 3 && ratio >= 0.8)) {
+    // Require at least 5 passes before giving up — secret doors need ~5 searches.
+    if ((navCtx.enclosedTick > 500 && navCtx.wallFollowPasses >= 5 && ratio >= 0.5) ||
+        (navCtx.wallFollowPasses >= 8 && ratio >= 0.8)) {
       navCtx.wallSearchPhase = false;
       navCtx.wallFollowPath = [];
       navCtx.wallFollowIdx = 0;
@@ -153,14 +154,9 @@
 
     // Walk the perimeter path
     if (navCtx.wallFollowPath.length > 0) {
-      // Advance past already-searched positions
-      while (navCtx.wallFollowIdx < navCtx.wallFollowPath.length &&
-             navCtx.searchedWallPos.has(
-               navCtx.wallFollowPath[navCtx.wallFollowIdx].x + ',' +
-               navCtx.wallFollowPath[navCtx.wallFollowIdx].y)) {
-        navCtx.wallFollowIdx++;
-      }
-
+      // NOTE: We no longer skip "searched" positions — secret doors in NetHack
+      // require ~5 searches on average, so each position must be visited multiple
+      // times. We simply walk the full path each pass.
       if (navCtx.wallFollowIdx >= navCtx.wallFollowPath.length) {
         navCtx.wallFollowIdx = 0;
         navCtx.wallFollowPasses++;
@@ -207,12 +203,12 @@
         const blocked = navCtx.knownTrapPositions || new Set();
         const next = NH.bfsAvoiding
           ? NH.bfsAvoiding(player.x, player.y, target.x, target.y, grid, blocked, navCtx.openedDoors)
-          : bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
+          : bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
         if (next) {
           const nextCh = (grid[next.y]||'')[next.x] || ' ';
 
           // Pet blocking — try to work around
-          if (PET_CHARS.has(nextCh)) {
+          if (MONSTERS.has(nextCh)) {
             navCtx.wallFollowTargetRetries++;
             if (navCtx.wallFollowTargetRetries > 3) {
               navCtx.searchedWallPos.add(target.x + ',' + target.y);
@@ -230,17 +226,25 @@
                 return true;
               }
             }
-            // Try to swap with pet
+            // Try to swap with pet (but avoid known traps)
             const nextIdx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(next.x-player.x) && ddy===(next.y-player.y));
-            if (nextIdx >= 0) { env.sendKey(KEY[nextIdx].charCodeAt(0)); return true; }
-            // Fallback: move toward target
+            if (nextIdx >= 0) {
+              const [pdx, pdy] = DIRS[nextIdx];
+              const pnx = player.x + pdx, pny = player.y + pdy;
+              if (!navCtx.knownTrapPositions.has(pnx + ',' + pny)) {
+                navCtx.lastMoveDir = nextIdx;
+                env.sendKey(KEY[nextIdx].charCodeAt(0)); return true;
+              }
+            }
+            // Fallback: move toward target (avoiding traps)
             for (const di of shuffleDirs()) {
               const [ddx, ddy] = DIRS[di];
               const nx = player.x + ddx, ny = player.y + ddy;
               if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
                 const ch = (grid[ny]||'')[nx] || ' ';
-                if (isWalkable(ch) && !MONSTERS.has(ch)) {
+                if (isWalkable(ch) && !MONSTERS.has(ch) && !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+                  navCtx.lastMoveDir = di;
                   env.sendKey(KEY[di].charCodeAt(0));
                   return true;
                 }
@@ -267,7 +271,7 @@
 
           const idx = DIRS.findIndex(([ddx,ddy]) =>
             ddx===(next.x-player.x) && ddy===(next.y-player.y));
-          if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+          if (idx >= 0) { navCtx.lastMoveDir = idx; env.sendKey(KEY[idx].charCodeAt(0)); return true; }
         }
 
         // BFS failed — mark target as unreachable and move on
@@ -311,11 +315,11 @@
         const s = features.stairsDown[0];
         const n = NH.bfsAvoiding
           ? NH.bfsAvoiding(player.x, player.y, s.x, s.y, grid, blocked, navCtx.openedDoors)
-          : bfs(player.x, player.y, s.x, s.y, grid, navCtx.openedDoors);
+          : bfs(player.x, player.y, s.x, s.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
         if (n) {
           const idx = DIRS.findIndex(([ddx,ddy]) =>
             ddx===(n.x-player.x) && ddy===(n.y-player.y));
-          if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+          if (idx >= 0) { navCtx.lastMoveDir = idx; env.sendKey(KEY[idx].charCodeAt(0)); return true; }
         }
       }
       if (features.doors.length > 0) {
@@ -327,11 +331,11 @@
         if (bestDoor) {
           const n = NH.bfsAvoiding
             ? NH.bfsAvoiding(player.x, player.y, bestDoor.x, bestDoor.y, grid, blocked, navCtx.openedDoors)
-            : bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid, navCtx.openedDoors);
+            : bfs(player.x, player.y, bestDoor.x, bestDoor.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
           if (n) {
             const idx = DIRS.findIndex(([ddx,ddy]) =>
               ddx===(n.x-player.x) && ddy===(n.y-player.y));
-            if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+            if (idx >= 0) { navCtx.lastMoveDir = idx; env.sendKey(KEY[idx].charCodeAt(0)); return true; }
           }
         }
       }
@@ -343,11 +347,11 @@
       const blocked = navCtx.knownTrapPositions || new Set();
       const next = NH.bfsAvoiding
         ? NH.bfsAvoiding(player.x, player.y, target.x, target.y, grid, blocked, navCtx.openedDoors)
-        : bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors);
+        : bfs(player.x, player.y, target.x, target.y, grid, navCtx.openedDoors, navCtx.knownTrapPositions);
       if (next) {
         const idx = DIRS.findIndex(([ddx,ddy]) =>
           ddx===(next.x-player.x) && ddy===(next.y-player.y));
-        if (idx >= 0) { env.sendKey(KEY[idx].charCodeAt(0)); return true; }
+        if (idx >= 0) { navCtx.lastMoveDir = idx; env.sendKey(KEY[idx].charCodeAt(0)); return true; }
       }
     }
 
@@ -360,6 +364,7 @@
       if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
         const ch = (grid[ny]||'')[nx] || ' ';
         if (isWalkable(ch) && !trapSet.has(nx + ',' + ny)) {
+          navCtx.lastMoveDir = di;
           env.sendKey(KEY[di].charCodeAt(0));
           return true;
         }

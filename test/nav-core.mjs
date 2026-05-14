@@ -12,13 +12,14 @@
   const DIRS = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[1,1],[-1,1]];
   const KEY  = ['h','l','k','j','y','u','n','b'];
   const MONSTERS = new Set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&;:\'I');
-  const PET_CHARS = new Set(['c','d','f','n','q','r','s','t','w','y']); // d=canine, f=feline, others=common pets
+  const PET_CHARS = new Set(['d','f','u']); // actual starting pet types (dog, cat, horse/pony)
 
   function isWalkable(ch) {
     if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) return false;
     if (ch === '|' || ch === '-' || ch === ' ' || ch === '`') return false;
     if (ch === "'" || ch === '"') return false; // room walls
     if (ch === '^') return false; // known traps
+    if (ch === '}' || ch === '~') return false; // water, lava, moat
     return true;
   }
 
@@ -27,6 +28,7 @@
     if (ch === "'" || ch === '"') return false; // room walls
     if (ch === '#') return true; // corridors are walkable
     if (ch === '^') return false; // known traps
+    if (ch === '}' || ch === '~') return false; // water, lava, moat
     return true;
   }
 
@@ -60,7 +62,7 @@
         if (ch === '+') features.doors.push({x, y});
         if (ch === '|' || ch === '-') features.walls.push({x, y});
         if (ch === '%') features.food.push({x, y});
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) features.monsters.push({x, y, ch});
+        if (MONSTERS.has(ch)) features.monsters.push({x, y, ch});
         if (ch === '>') features.stairsDown.push({x, y});
         if (ch === '<') features.stairsUp.push({x, y});
       }
@@ -94,10 +96,10 @@
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
-        if (!(nx === tx && ny === ty) &&
-            !isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
+        if (!isBfsWalkable(ch) && !(nx === tx && ny === ty) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
+        // Avoid known traps even if they're the target — stepping on them causes "Really step" loops
         if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
+        if (MONSTERS.has(ch) && !(nx === tx && ny === ty)) continue;
         visited[ny][nx] = 1;
         parent[ny][nx] = cur;
         queue.push({x: nx, y: ny});
@@ -106,7 +108,7 @@
     return null;
   }
 
-  function bfs(sx, sy, tx, ty, grid, openDoors) {
+  function bfs(sx, sy, tx, ty, grid, openDoors, blockedPositions) {
     if (sx === tx && sy === ty) return null;
     const visited = Array.from({length: H}, () => new Uint8Array(W));
     const parent = Array.from({length: H}, () => new Array(W).fill(null));
@@ -129,8 +131,47 @@
         const ch = (grid[ny]||'')[nx] || ' ';
         if (!(nx === tx && ny === ty) &&
             !isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
-        // Skip monsters (but allow target if it's a monster — we'll attack it)
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch) && !(nx === tx && ny === ty)) continue;
+        // Avoid known traps even if they're the target — stepping on them causes "Really step" loops
+        if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
+        // Skip monsters and pets (but allow target if it's a monster — we'll attack it)
+        if (MONSTERS.has(ch) && !(nx === tx && ny === ty)) continue;
+        visited[ny][nx] = 1;
+        parent[ny][nx] = cur;
+        queue.push({x: nx, y: ny});
+      }
+    }
+    return null;
+  }
+
+  /**
+   * BFS that ignores monsters (for stairs rushing). Still avoids traps.
+   */
+  function bfsRush(sx, sy, tx, ty, grid, openDoors, blockedPositions) {
+    if (sx === tx && sy === ty) return null;
+    const visited = Array.from({length: H}, () => new Uint8Array(W));
+    const parent = Array.from({length: H}, () => new Array(W).fill(null));
+    const queue = [{x: sx, y: sy}];
+    visited[sy][sx] = 1;
+    let head = 0;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      if (cur.x === tx && cur.y === ty) {
+        let step = cur;
+        while (parent[step.y][step.x] && !(parent[step.y][step.x].x === sx && parent[step.y][step.x].y === sy)) {
+          step = parent[step.y][step.x];
+        }
+        return step;
+      }
+      for (const [dx, dy] of DIRS) {
+        const nx = cur.x + dx, ny = cur.y + dy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        if (visited[ny][nx]) continue;
+        const ch = (grid[ny]||'')[nx] || ' ';
+        if (!(nx === tx && ny === ty) &&
+            !isBfsWalkable(ch) && !(openDoors && openDoors.has(nx + ',' + ny))) continue;
+        // Avoid known traps
+        if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
+        // Don't skip monsters — we want to rush past them to stairs
         visited[ny][nx] = 1;
         parent[ny][nx] = cur;
         queue.push({x: nx, y: ny});
@@ -183,6 +224,7 @@
         if (visited[ny][nx]) continue;
         const nch = (grid[ny]||'')[nx] || ' ';
         if (!isBfsWalkable(nch)) continue;
+        if (blockedPositions && blockedPositions.has(nx + ',' + ny)) continue;
         visited[ny][nx] = 1;
         parent[ny][nx] = cur;
         queue.push({x: nx, y: ny});
@@ -213,7 +255,7 @@
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const ch = (grid[y] || '')[x] || ' ';
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) {
+        if (MONSTERS.has(ch)) {
           const dist = Math.abs(x - px) + Math.abs(y - py);
           if (dist < bestDist) { bestDist = dist; best = { x, y, ch }; }
         }
@@ -236,7 +278,7 @@
   Object.assign(global.NHNav, {
     W, H, DIRS, KEY, MONSTERS, PET_CHARS,
     isWalkable, isBfsWalkable,
-    findOnMap, scanMap, bfs, bfsAvoiding,
+    findOnMap, scanMap, bfs, bfsAvoiding, bfsRush,
     findNearestUnexplored, getRecentMessages,
     isSearchSpam, findNearestMonster, shuffleDirs,
   });
@@ -244,5 +286,5 @@
 
 // ES module exports (for Node)
 export const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable,
-                findOnMap, scanMap, bfs, bfsAvoiding, findNearestUnexplored,
+                findOnMap, scanMap, bfs, bfsAvoiding, bfsRush, findNearestUnexplored,
                 getRecentMessages, isSearchSpam, findNearestMonster, shuffleDirs } = global.NHNav || {};

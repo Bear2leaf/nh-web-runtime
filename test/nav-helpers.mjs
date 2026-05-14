@@ -15,7 +15,7 @@ const MAX_TELEPORT_ATTEMPTS = 3;
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-helpers.mjs'); return; }
 
-  const { W, H, DIRS, MONSTERS, PET_CHARS, isWalkable, isBfsWalkable } = NH;
+  const { W, H, DIRS, MONSTERS, isWalkable, isBfsWalkable } = NH;
 
   // Check if a position is adjacent to a wall, door, or corridor edge
   function isAdjacentToWall(px, py, grid) {
@@ -52,7 +52,7 @@ const MAX_TELEPORT_ATTEMPTS = 3;
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
         if (!isBfsWalkable(ch)) continue;
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) continue;
+        if (MONSTERS.has(ch)) continue;
         visited[ny][nx] = 1;
         queue.push({x: nx, y: ny});
       }
@@ -119,7 +119,7 @@ const MAX_TELEPORT_ATTEMPTS = 3;
         if (visited[ny][nx]) continue;
         const ch = (grid[ny]||'')[nx] || ' ';
         if (!isBfsWalkable(ch)) continue;
-        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) continue;
+        if (MONSTERS.has(ch)) continue;
         visited[ny][nx] = 1;
         parent[ny][nx] = cur;
         queue.push({x: nx, y: ny});
