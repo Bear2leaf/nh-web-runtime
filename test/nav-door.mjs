@@ -17,7 +17,7 @@
   const { W, H, DIRS, KEY, bfs } = NH;
 
   const MAX_KICK_ATTEMPTS = 5;
-  const MAX_OPEN_ATTEMPTS = 3;
+  const MAX_OPEN_ATTEMPTS = 1;
 
   /**
    * Navigate to and open doors. Kick locked doors (unless leg is injured).
@@ -73,6 +73,17 @@
         navCtx._lastDoorFailKey = doorFailKey;
         navCtx._doorFailCount = 1;
       }
+    }
+
+    // Hard cap: if we've spent too many total ticks on doors, give up and explore
+    if (!navCtx._totalDoorTicks) navCtx._totalDoorTicks = 0;
+    navCtx._totalDoorTicks++;
+    if (navCtx._totalDoorTicks > 30) {
+      console.log(`[NAV] Spent ${navCtx._totalDoorTicks} ticks on doors, giving up and exploring`);
+      // Mark all remaining doors as tried
+      for (const d of untriedDoors) triedDoors.add(d.x + ',' + d.y);
+      navCtx._totalDoorTicks = 0;
+      return false;
     }
 
     let bestDoor = null, bestNext = null, bestDist = Infinity;

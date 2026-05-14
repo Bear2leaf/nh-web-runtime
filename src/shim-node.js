@@ -126,6 +126,10 @@ export function resetShimState() {
     shimState.callback_call_count = {};
     shimState.get_nh_event_count = 0;
     shimState.last_log_time = Date.now();
+    if (nethackShimCallback) {
+        nethackShimCallback._nextWinId = 1;
+        nethackShimCallback._inventoryWinId = undefined;
+    }
     shimState.cursorX = 0;
     shimState.cursorY = 0;
     shimState.lastLevelDesc = '';
@@ -355,6 +359,13 @@ export async function nethackShimCallback(name, ...args) {
     }
 
     case 'shim_destroy_nhwindow': {
+        const winid = args[0];
+        if (winid === nethackShimCallback._inventoryWinId) {
+            nethackShimCallback._inventoryWinId = undefined;
+        }
+        if (winid === shimState.mapWinId) {
+            shimState.mapWinId = null;
+        }
         return Promise.resolve();
     }
 

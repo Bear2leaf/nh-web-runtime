@@ -1,7 +1,8 @@
 # NetHack WASM Runtime — Makefile
 #
-# Orchestrates the NetHack WASM build: patches winshim.c, builds via
-# the submodule's own Makefile, then restores the patched file.
+# Orchestrates the NetHack WASM build: applies patches, builds via
+# the submodule's own Makefile, then restores all patched files so
+# the NetHack submodule remains clean after every build.
 #
 # Usage:
 #   make            — build nethack.js + nethack.wasm
@@ -16,8 +17,10 @@ NH          := $(ROOT)/NetHack
 WASM_DIR    := $(NH)/targets/wasm
 WASM_JS     := $(WASM_DIR)/nethack.js
 WASM_WASM   := $(WASM_DIR)/nethack.wasm
-WINSWIM     := $(NH)/win/shim/winshim.c
-PATCH_FILE  := $(ROOT)/patches/winshim.patch
+PATCH_FILES := $(ROOT)/patches/winshim.patch $(ROOT)/patches/nethack-restart.patch
+# All files touched by the patches — must be restored after build
+PATCHED_FILES := win/shim/winshim.c include/extern.h sys/libnh/libnhmain.c \
+    sys/unix/hints/include/cross-pre2.500 src/allmain.c src/end.c src/invent.c
 
 # ── Emscripten ───────────────────────────────────────────────────────────
 
@@ -31,22 +34,27 @@ all: $(WASM_JS)
 
 # ── Build ────────────────────────────────────────────────────────────────
 
-$(WASM_JS): .winshim-patched
+$(WASM_JS): .patches-applied
 	@echo "[BUILD] Compiling WASM..."
 	@if [ -f $(EMSDK_ENV) ]; then . $(EMSDK_ENV); fi && \
 		$(MAKE) -C $(NH) CROSS_TO_WASM=1 wasm
-	@echo "[BUILD] Restoring winshim.c..."
-	cd $(NH) && git checkout win/shim/winshim.c
-	@rm -f .winshim-patched
+	@echo "[BUILD] Restoring patched files..."
+	cd $(NH) && git checkout $(PATCHED_FILES)
+	@rm -f .patches-applied
 	@echo "[BUILD] Done — $(WASM_JS)"
 
 # ── Patch + setup ────────────────────────────────────────────────────────
-# Generate the NetHack Makefile then apply our winshim.c patch.
-# The .winshim-patched sentinel drives the dependency chain.
+# Generate the NetHack Makefile then apply all patches.
+# The .patches-applied sentinel drives the dependency chain.
 
-.winshim-patched: $(NH)/Makefile $(WINSWIM) $(PATCH_FILE)
-	@echo "[PATCH] Applying winshim.c patch..."
-	cd $(NH) && git apply $(PATCH_FILE)
+.patches-applied: $(NH)/Makefile $(PATCH_FILES)
+	@echo "[PATCH] Applying NetHack patches..."
+	@for p in $(PATCH_FILES); do \
+		echo "  $$p"; \
+		cd $(NH) && git apply $$p || exit 1; \
+	done
+	@echo "[SETUP] Regenerating NetHack Makefiles after patch..."
+	cd $(NH)/sys/unix && sh setup.sh hints/macOS.500
 	@touch $@
 
 # ── NetHack Makefile generation ──────────────────────────────────────────
@@ -64,9 +72,9 @@ $(NH)/lib/lua-5.4.8/src/lua.h:
 # ── Clean ────────────────────────────────────────────────────────────────
 
 clean:
-	@echo "[CLEAN] Restoring winshim.c..."
-	cd $(NH) && git checkout win/shim/winshim.c 2>/dev/null || true
-	@rm -f .winshim-patched
+	@echo "[CLEAN] Restoring patched files..."
+	cd $(NH) && git checkout $(PATCHED_FILES) 2>/dev/null || true
+	@rm -f .patches-applied
 	@echo "[CLEAN] Removing WASM artifacts..."
 	rm -f $(WASM_JS) $(WASM_WASM)
 	rm -f $(WASM_DIR)/*.o

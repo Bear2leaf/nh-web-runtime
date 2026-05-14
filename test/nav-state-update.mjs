@@ -215,7 +215,13 @@
         (navCtx.features.doors.length === 0 ||
          (navCtx.triedDoors && navCtx.triedDoors.size >= navCtx.features.doors.length));
       // If a corridor is visible, the room is not truly enclosed — corridor handler owns corridors
-      const corridorVisible = (navCtx.grid||'').some(row => row.includes('#'));
+      let corridorVisible = false;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          if ((navCtx.grid[y]||'')[x] === '#') { corridorVisible = true; break; }
+        }
+        if (corridorVisible) break;
+      }
       const hasTrueExits = !!navCtx.stairs || navCtx.features.doors.length > 0 || corridorVisible;
       const recentSearchCooldown = navCtx.searchCooldownTick > 0 &&
         navCtx.tickCount - navCtx.searchCooldownTick <= 10;

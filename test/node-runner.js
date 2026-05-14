@@ -7,17 +7,18 @@
  *
  * Dual-mode file:
  *   - Default (scheduler): forks worker pool, assigns trials, prints stats.
- *   - Worker (NH_WORKER=1): loads WASM once, runs trials via IPC on demand.
+ *   - Worker (NH_WORKER=1): loads WASM factory once, creates a fresh module
+ *     instance for each trial via IPC on demand.
  *
- * Each trial instantiates a fresh WASM module instance from a pre-compiled
- * WebAssembly.Module (~3ms), keeping trials isolated without the per-trial
- * process spawn or re-compile overhead.
+ * Each trial gets a brand-new WASM module instance to avoid Asyncify state
+ * corruption that occurs when trying to restart a game within the same
+ * instance. Module instantiation is fast (~30 ms) so per-trial overhead is
+ * minimal.
  */
 
 import { fork } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import fs from 'fs';
 
 import shimNode from '../src/shim-node.js';
 import { NHNodeEnv } from './nav-env-node.js';
@@ -54,7 +55,6 @@ const WASM_BIN = join(WASM_DIR, 'nethack.wasm');
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _moduleFactory = null;
-let _wasmModule = null;
 
 async function getModuleFactory() {
     if (_moduleFactory) return _moduleFactory;
@@ -68,54 +68,63 @@ async function getModuleFactory() {
     return ModuleFactory;
 }
 
-async function getWasmModule() {
-    if (_wasmModule) return _wasmModule;
-    const wasmBuffer = fs.readFileSync(WASM_BIN);
-    _wasmModule = await WebAssembly.compile(wasmBuffer);
-    return _wasmModule;
-}
-
-async function runOneTrial(trialNum, totalTrials) {
-    shimNode.resetShimState();
-
-    const [ModuleFactory, wasmModule] = await Promise.all([
-        getModuleFactory(),
-        getWasmModule(),
-    ]);
-
+async function createModule() {
+    const ModuleFactory = await getModuleFactory();
     const mod = await ModuleFactory({
         noInitialRun: true,
         arguments: ['nethack', '-D', 'notutorial'],
         print: () => {},
         printErr: () => {},
-        instantiateWasm: (importObject, receiveInstance) => {
-            WebAssembly.instantiate(wasmModule, importObject).then((instance) => {
-                receiveInstance(instance, wasmModule);
-            });
-        },
+        locateFile: (f) => (f === 'nethack.wasm' || f.endsWith('.wasm')) ? `file://${WASM_BIN}` : f,
         onRuntimeInitialized() {
             globalThis.nethackShimCallback = shimNode.nethackShimCallback;
             this.ccall('shim_graphics_set_callback', null, ['string'], ['nethackShimCallback']);
         },
     });
     shimNode.setModule(mod);
+    globalThis.nethackModule = mod;
+    return mod;
+}
 
-    const mainPromise = mod.ccall('main', 'number', ['number', 'string'], [0, ''], { async: true });
-    mainPromise.then(() => { shimNode.shimState.done = true; })
-        .catch((err) => { console.log(`[RUNNER] Trial ${trialNum} main() error:`, err.message); shimNode.shimState.done = true; });
+async function runOneTrial(trialNum, totalTrials) {
+    console.log(`[WORKER] runOneTrial(${trialNum}) starting...`);
 
+    // Create a fresh module instance for every trial to avoid Asyncify
+    // state corruption from prior games.
+    const mod = await createModule();
+    shimNode.resetShimState();
+
+    mod.ccall('main', 'number', ['number', 'string'], [0, ''], { async: true })
+        .then(() => { shimNode.shimState.done = true; })
+        .catch((err) => {
+            const msg = err?.message || String(err);
+            // Emscripten may throw ExitStatus when the game ends naturally
+            if (msg.includes('program exited') || msg.includes('ExitStatus') || err?.status === 0) {
+                shimNode.shimState.done = true;
+            } else {
+                console.log(`[RUNNER] main() error:`, msg);
+            }
+        });
+    console.log(`[WORKER] Trial ${trialNum}: main() called`);
+
+    // Wait for dlvl to be populated (the game may still be initializing).
+    console.log(`[WORKER] Trial ${trialNum}: waiting for dlvl...`);
     await shimNode.waitForCondition(() => shimNode.shimState.dlvl !== '', 60000, 200);
+    console.log(`[WORKER] Trial ${trialNum}: dlvl = ${shimNode.shimState.dlvl}`);
     const startDlvl = shimNode.shimState.dlvl;
     const env = new NHNodeEnv(shimNode.shimState, shimNode.sendKey);
 
     return new Promise((resolve) => {
         let resolved = false;
         let timeoutId;
+        let counterCheckId;
+        const startCounter = mod.ccall('shim_get_game_counter', 'number', [], [], { async: false });
 
         const onDone = (reason) => {
             if (resolved) return;
             resolved = true;
             clearTimeout(timeoutId);
+            clearInterval(counterCheckId);
 
             const finalDlvl = shimNode.shimState.dlvl;
             const lastMsgs = shimNode.shimState.messages
@@ -136,9 +145,24 @@ async function runOneTrial(trialNum, totalTrials) {
 
         startNavigation(startDlvl, onDone, env);
 
+        // Poll game counter: if it increments, player died and game restarted
+        counterCheckId = setInterval(() => {
+            if (resolved) return;
+            try {
+                const currentCounter = mod.ccall('shim_get_game_counter', 'number', [], [], { async: false });
+                if (currentCounter > startCounter) {
+                    console.log(`[SINGLE] trial=${trialNum}/${totalTrials} detected death (counter ${startCounter} -> ${currentCounter})`);
+                    onDone('died');
+                }
+            } catch (e) {
+                // ignore
+            }
+        }, 500);
+
         timeoutId = setTimeout(() => {
             if (resolved) return;
             resolved = true;
+            clearInterval(counterCheckId);
             console.log(`[SINGLE] trial=${trialNum}/${totalTrials} result=max-ticks code=124`);
             resolve({ reason: 'max-ticks', code: 124, hp: '?', lastMsgs: [] });
         }, 5 * 60 * 1000);
@@ -150,19 +174,25 @@ async function runOneTrial(trialNum, totalTrials) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 if (process.env.NH_WORKER === '1') {
-    await getModuleFactory();
-    if (process.send) process.send({ type: 'ready' });
-
+    // Set up message handler BEFORE any async work so we don't miss the
+    // first 'run' message from the scheduler.
     process.on('message', async (msg) => {
         if (msg.type === 'run') {
-            const result = await runOneTrial(msg.trialNum, msg.trialNum);
-            if (process.send) process.send({ type: 'result', result });
+            try {
+                const result = await runOneTrial(msg.trialNum, msg.trialNum);
+                if (process.send) process.send({ type: 'result', result });
+            } catch (e) {
+                console.error('[WORKER] Error in runOneTrial:', e?.message || e);
+                if (process.send) process.send({ type: 'result', result: { reason: 'error', code: 1, hp: '?', lastMsgs: [e?.message || String(e)] } });
+            }
+            // Exit after each trial so the next trial gets a clean process.
+            process.exit(0);
         } else if (msg.type === 'exit') {
             process.exit(0);
         }
     });
 
-    // Keep alive until 'exit' message
+    if (process.send) process.send({ type: 'ready' });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -176,38 +206,31 @@ else {
     const results = { descended: 0, died: 0, 'game-ended': 0, stuck: 0, 'max-ticks': 0, other: 0 };
     const details = [];
 
-    function createWorkerPool(size) {
-        const workers = [];
-        const readyPromises = [];
-        for (let i = 0; i < size; i++) {
-            const worker = fork(__filename, [], {
-                cwd: process.cwd(),
-                env: { ...process.env, NH_WORKER: '1' },
-                stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-            });
-            const ready = new Promise((resolve) => {
-                worker.once('message', (msg) => { if (msg.type === 'ready') resolve(); });
-            });
-            readyPromises.push(ready);
-            workers.push(worker);
-        }
-        return { workers, ready: Promise.all(readyPromises) };
-    }
-
     console.log(`[RUNNER] Starting ${max_tries} trials with concurrency=${concurrency}...`);
-
-    const { workers, ready } = createWorkerPool(concurrency);
-    await ready;
 
     let nextTrial = 1;
     let completed = 0;
+    let activeWorkers = 0;
 
-    function assignNext(worker) {
+    function spawnWorkerAndAssign() {
         if (nextTrial > max_tries) return;
         const trialNum = nextTrial++;
         const startTime = Date.now();
+        activeWorkers++;
 
-        worker.once('message', (msg) => {
+        const worker = fork(__filename, [], {
+            cwd: process.cwd(),
+            env: { ...process.env, NH_WORKER: '1' },
+            stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        });
+
+        let readyReceived = false;
+        worker.on('message', (msg) => {
+            if (msg.type === 'ready' && !readyReceived) {
+                readyReceived = true;
+                worker.send({ type: 'run', trialNum });
+                return;
+            }
             if (msg.type !== 'result') return;
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             const r = msg.result;
@@ -226,26 +249,41 @@ else {
             completed++;
 
             process.stdout.write(`\r[RUNNER] ${completed}/${max_tries} — success=${results.descended} died=${results.died} stuck=${results.stuck} other=${results.other + results['game-ended'] + results['max-ticks']}`);
-            assignNext(worker);
         });
 
-        worker.send({ type: 'run', trialNum });
+        worker.on('exit', () => {
+            activeWorkers--;
+            if (nextTrial <= max_tries) {
+                spawnWorkerAndAssign();
+            }
+        });
+
+        worker.on('error', (err) => {
+            console.error(`[RUNNER] Worker error for trial ${trialNum}:`, err);
+            activeWorkers--;
+            results['other'] = (results['other'] || 0) + 1;
+            completed++;
+            if (nextTrial <= max_tries) {
+                spawnWorkerAndAssign();
+            }
+        });
     }
 
-    for (const worker of workers) assignNext(worker);
+    // Seed the initial worker pool
+    for (let i = 0; i < concurrency; i++) {
+        spawnWorkerAndAssign();
+    }
 
     await new Promise((resolve) => {
-        const check = () => { if (completed >= max_tries) resolve(); else setTimeout(check, 100); };
+        const check = () => {
+            if (completed >= max_tries && activeWorkers === 0) {
+                resolve();
+            } else {
+                setTimeout(check, 100);
+            }
+        };
         check();
     });
-
-    // Shutdown workers
-    for (const worker of workers) {
-        worker.send({ type: 'exit' });
-    }
-
-    // Wait for all workers to actually exit (prevents zombie processes)
-    await Promise.all(workers.map(w => new Promise(r => w.on('exit', r))));
 
     console.log('\n');
     console.log('=== Results ===');

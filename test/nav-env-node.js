@@ -16,11 +16,13 @@ export class NHNodeEnv {
     }
 
     getHp() {
-        return parseInt(this._s.hp) || 999;
+        const v = parseInt(this._s.hp);
+        return Number.isFinite(v) ? v : 999;
     }
 
     getMaxHp() {
-        return parseInt(this._s.maxHp) || 999;
+        const v = parseInt(this._s.maxHp);
+        return Number.isFinite(v) ? v : 999;
     }
 
     getHunger() {
@@ -70,5 +72,17 @@ export class NHNodeEnv {
 
     isReadyForInput() {
         return this._s.inputResolve !== null || this._s.ynResolve !== null;
+    }
+
+    getGameCounter() {
+        // Access the global module via shimNode's internal reference if available
+        if (globalThis.nethackModule && globalThis.nethackModule.ccall) {
+            try {
+                return globalThis.nethackModule.ccall('shim_get_game_counter', 'number', [], [], { async: false });
+            } catch (e) {
+                return 0;
+            }
+        }
+        return 0;
     }
 }

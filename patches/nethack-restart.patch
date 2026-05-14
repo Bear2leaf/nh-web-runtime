@@ -1,0 +1,268 @@
+diff --git a/include/extern.h b/include/extern.h
+index accecff22..45c7bb480 100644
+--- a/include/extern.h
++++ b/include/extern.h
+@@ -1353,6 +1353,7 @@ extern void prinv(const char *, struct obj *, long) NONNULLARG2;
+ extern char *xprname(struct obj *, const char *, char, boolean, long, long);
+ extern int ddoinv(void);
+ extern char display_inventory(const char *, boolean);
++extern void reset_perminvent_state(void);
+ extern int display_binventory(coordxy, coordxy, boolean);
+ extern struct obj *display_cinventory(struct obj *) NONNULLARG1;
+ extern struct obj *display_minventory(struct monst *, int, char *) NONNULLARG1;
+@@ -1968,7 +1969,7 @@ extern struct monst *mk_mplayer(struct permonst *,
+ extern void create_mplayers(int, boolean);
+ extern void mplayer_talk(struct monst *) NONNULLARG1;
+ 
+-#if defined(MICRO) || defined(WIN32)
++#if defined(MICRO) || defined(WIN32) || defined(__EMSCRIPTEN__)
+ 
+ /* ### msdos.c,os2.c,tos.c,windsys.c ### */
+ 
+@@ -2382,7 +2383,7 @@ extern const char *get_portable_device(void);
+ #endif
+ 
+ /* ### pcsys.c, windsys.c ### */
+-#if defined(MICRO) || defined(WIN32)
++#if defined(MICRO) || defined(WIN32) || defined(__EMSCRIPTEN__)
+ ATTRNORETURN extern void nethack_exit(int) NORETURN;
+ #else
+ #define nethack_exit exit
+@@ -2390,7 +2391,7 @@ ATTRNORETURN extern void nethack_exit(int) NORETURN;
+ 
+ /* ### pcsys.c  ### */
+ 
+-#if defined(MICRO) || defined(WIN32)
++#if defined(MICRO) || defined(WIN32) || defined(__EMSCRIPTEN__)
+ extern void flushout(void);
+ extern int dosh(void);
+ extern void append_slash(char *);
+@@ -2403,7 +2404,7 @@ extern void msmsg(const char *, ...) PRINTF_F(1, 2);
+ 
+ /* ### pctty.c ### */
+ 
+-#if defined(MICRO) || defined(WIN32)
++#if defined(MICRO) || defined(WIN32) || defined(__EMSCRIPTEN__)
+ extern void gettty(void);
+ extern void settty(const char *);
+ extern void setftty(void);
+diff --git a/src/allmain.c b/src/allmain.c
+index f7ee742ad..a112c1550 100644
+--- a/src/allmain.c
++++ b/src/allmain.c
+@@ -11,6 +11,10 @@
+ #include <signal.h>
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++extern volatile int nh_restart_requested;
++#endif
++
+ staticfn void moveloop_preamble(boolean);
+ staticfn void u_calc_moveamt(int);
+ staticfn void maybe_generate_rnd_mon(void);
+@@ -182,6 +186,11 @@ moveloop_core(void)
+     if (program_state.done_hup)
+         end_of_input();
+ #endif
++#ifdef __EMSCRIPTEN__
++    if (nh_restart_requested)
++        return;
++#endif
++
+     get_nh_event();
+ #ifdef POSITIONBAR
+     do_positionbar();
+@@ -599,6 +608,12 @@ moveloop(boolean resuming)
+ 
+     for (;;) {
+         moveloop_core();
++#ifdef __EMSCRIPTEN__
++        if (nh_restart_requested) {
++            nh_restart_requested = 0;
++            return;
++        }
++#endif
+     }
+ }
+ 
+diff --git a/src/end.c b/src/end.c
+index 8a366d434..5439b5e43 100644
+--- a/src/end.c
++++ b/src/end.c
+@@ -1124,7 +1124,15 @@ done(int how)
+         svk.killer.format = KILLED_BY_AN; /* reset to 0 */
+         return;
+     }
++#ifdef __EMSCRIPTEN__
++    extern volatile int nh_restart_requested;
++    nh_restart_requested = 1;
++    return;
++#else
++
+     really_done(how);
++#endif
++
+     /*NOTREACHED*/
+ }
+ 
+diff --git a/src/invent.c b/src/invent.c
+index 446859540..0c2bab21f 100644
+--- a/src/invent.c
++++ b/src/invent.c
+@@ -5561,6 +5561,14 @@ prepare_perminvent(winid window)
+     }
+ }
+ 
++void
++reset_perminvent_state(void)
++{
++    perminv_flags = InvOptNone;
++    wri_info = zerowri;
++    in_perm_invent_toggled = FALSE;
++}
++
+ void
+ sync_perminvent(void)
+ {
+diff --git a/sys/libnh/libnhmain.c b/sys/libnh/libnhmain.c
+index 67b38e4e0..9100e5287 100644
+--- a/sys/libnh/libnhmain.c
++++ b/sys/libnh/libnhmain.c
+@@ -22,6 +22,42 @@
+ void js_helpers_init();
+ void js_constants_init();
+ void js_globals_init();
++
++/* Restart support: on Emscripten we cannot safely use longjmp or exit()
++ * across Asyncify suspend/resume cycles (it corrupts the wasm stack).
++ * Instead we return normally from every function so the call stack
++ * unwinds back to nhmain().  nhmain() has a for(;;) loop that resets
++ * game state and starts a fresh game. */
++static volatile int nh_game_ended = 0;
++/* non-static so allmain.c can see it */
++volatile int nh_restart_requested = 0;
++static volatile int nh_game_counter = 0;
++
++EMSCRIPTEN_KEEPALIVE
++void shim_request_restart(void) {
++    nh_restart_requested = 1;
++}
++
++EMSCRIPTEN_KEEPALIVE
++int shim_get_game_counter(void) {
++    return nh_game_counter;
++}
++
++EMSCRIPTEN_KEEPALIVE
++void shim_restart_game(void) {
++    nh_game_ended = 1;
++    nh_restart_requested = 1;
++}
++
++/* nethack_exit() is declared NORETURN.  On Emscripten we use
++ * emscripten_force_exit() to satisfy that contract while still
++ * keeping the runtime alive (NO_EXIT_RUNTIME).  The restart path
++ * avoids calling nethack_exit() entirely; this is only reached from
++ * unexpected paths like panic(). */
++void nethack_exit(int status) {
++    nh_game_ended = 1;
++    emscripten_force_exit(status);
++}
+ #endif
+ 
+ #if !defined(_BULL_SOURCE) && !defined(__sgi) && !defined(_M_UNIX)
+@@ -267,6 +303,10 @@ nhmain(int argc, char *argv[])
+      * (for gl.locknum > 0).
+      */
+     if (*svp.plname) {
++#ifdef __EMSCRIPTEN__
++        if (nh_game_counter > 0)
++            delete_levelfile(0); /* remove stale lock file for restart */
++#endif
+         getlock();
+         program_state.preserve_locks = 0; /* after getlock() */
+     }
+@@ -325,16 +365,67 @@ nhmain(int argc, char *argv[])
+                 goto attempt_restore;
+             }
+         }
++        nh_game_counter++;
+         newgame();
+         wd_message();
+     }
+ 
+     /* moveloop() never returns but isn't flagged NORETURN */
++#ifdef __EMSCRIPTEN__
++    for (;;) {
++        moveloop(resuming);
++        /* Restart requested — moveloop() returned normally.
++         * Reset state and start a fresh game without exiting. */
++        program_state.gameover = 0;
++        program_state.something_worth_saving = 1;
++        program_state.exiting = 0;
++        program_state.in_moveloop = 0; /* suppress update_inventory during init */
++        iflags.vision_inited = FALSE;
++        resuming = FALSE;
++        /* Skip freedynamicdata() on Emscripten: newgame() re-initialises
++         * what it needs and old allocations just leak (harmless in the
++         * short-lived WASM heap). */
++        dlb_cleanup();
++        l_nhcore_done();
++        dlb_init();
++        vision_init();
++        free_pickinv_cache(); /* destroy cached pickinv window */
++        reset_perminvent_state(); /* reset static perm-invent state */
++        gc.core_invent_state = 0;
++        /* Destroy standard windows so init_sound_disp_gamewindows() recreates them fresh */
++        if (WIN_INVEN != WIN_ERR) {
++            destroy_nhwindow(WIN_INVEN);
++            WIN_INVEN = WIN_ERR;
++        }
++        if (WIN_MAP != WIN_ERR) {
++            destroy_nhwindow(WIN_MAP);
++            WIN_MAP = WIN_ERR;
++        }
++        if (WIN_STATUS != WIN_ERR) {
++            destroy_nhwindow(WIN_STATUS);
++            WIN_STATUS = WIN_ERR;
++        }
++        if (WIN_MESSAGE != WIN_ERR) {
++            destroy_nhwindow(WIN_MESSAGE);
++            WIN_MESSAGE = WIN_ERR;
++        }
++        delete_levelfile(0); /* remove stale lock file */
++        if (*svp.plname) {
++            gl.locknum = 0; /* force getlock() to reset gl.lock via Sprintf() */
++            getlock();
++            program_state.preserve_locks = 0;
++        }
++        nh_game_counter++;
++        init_sound_disp_gamewindows();
++        newgame();
++        wd_message();
++    }
++#else
+     moveloop(resuming);
+-
+     exit(EXIT_SUCCESS);
+     /*NOTREACHED*/
+     return 0;
++#endif
+ }
+ 
+ /* caveat: argv elements might be arbitrary long */
+diff --git a/sys/unix/hints/include/cross-pre2.500 b/sys/unix/hints/include/cross-pre2.500
+index 6a1331c6a..159a98eae 100644
+--- a/sys/unix/hints/include/cross-pre2.500
++++ b/sys/unix/hints/include/cross-pre2.500
+@@ -279,7 +279,8 @@ EMCC_LFLAGS += -s ALLOW_TABLE_GROWTH
+ EMCC_LFLAGS += -s ASYNCIFY -s ASYNCIFY_IMPORTS='["local_callback"]'
+ EMCC_LFLAGS += -O3
+ EMCC_LFLAGS += -s MODULARIZE
+-EMCC_LFLAGS += -s EXPORTED_FUNCTIONS='["_main", "_shim_graphics_set_callback", "_repopulate_perminvent", "_malloc"]'
++EMCC_LFLAGS += -s NO_EXIT_RUNTIME
++EMCC_LFLAGS += -s EXPORTED_FUNCTIONS='["_main", "_shim_graphics_set_callback", "_repopulate_perminvent", "_malloc", "_shim_restart_game", "_shim_request_restart", "_shim_get_game_counter"]'
+ EMCC_LFLAGS += -s EXPORTED_RUNTIME_METHODS='["cwrap", "ccall", "addFunction", \
+ 			"removeFunction", "UTF8ToString", "stringToUTF8", "getValue", \
+ 			"setValue", "ENV", "FS", "IDBFS"]'
