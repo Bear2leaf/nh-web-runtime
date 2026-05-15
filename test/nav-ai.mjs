@@ -198,6 +198,23 @@
       // ---- Modal handling (YN prompts, menus) ----
       if (NH.handleModal && NH.handleModal(navCtx)) return true;
 
+      // ---- Intro text / display-file safety net ----
+      // Some roles (Valkyrie, Healer, Priest) show a quest intro that can
+      // stall the game if the usual key flow doesn't dismiss it. If we haven't
+      // moved for a while and see intro text markers, send SPACE to advance.
+      if (navCtx.stuckCount > 30) {
+        const introMarkers = ['welcome to NetHack', 'Go bravely with',
+          'hour of destiny has come', 'For the sake of us all'];
+        const hasIntroText = navCtx.msgs.some(m =>
+          introMarkers.some(marker => m.toLowerCase().includes(marker.toLowerCase()))
+        );
+        if (hasIntroText) {
+          console.log(`[NAV] Intro text detected — sending SPACE to advance at tick=${navCtx.tickCount}`);
+          navCtx.env.sendKey(' '.charCodeAt(0));
+          return true;
+        }
+      }
+
       // ---- Read map and update all derived state ----
       NH.updateMapAndState(navCtx);
       if (!navCtx.grid || !navCtx.player) {
