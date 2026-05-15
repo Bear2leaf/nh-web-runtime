@@ -68,6 +68,7 @@
 
       // Pet block wait tracking
       lastPetWaitTick: 0,
+      petBlockWaitUntil: 0,
 
       // Hidden monster timeout tracker
       _hiddenMonsterStartTick: 0,
@@ -251,11 +252,15 @@
       const lastFewMsgs = navCtx.msgs.slice(-5);
       const waitingForHit = lastFewMsgs.some(m => m.includes('waiting to get hit'));
       const heldByLichen = lastFewMsgs.some(m => m.includes('cannot escape'));
-      // If there's a visible adjacent monster, let handleCombat deal with it first.
+      // If there's a visible adjacent hostile monster, let handleCombat deal with it first.
       // The hidden-monster handler can run next tick if combat doesn't clear the message.
+      // Skip the known pet — combat won't attack it anyway, so we should handle the
+      // hidden monster ourselves instead of falling through to handlers that send '.'
       const hasVisibleAdjMonster = navCtx.features && navCtx.features.monsters.some(m => {
         const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
-        return dist <= 1;
+        if (dist > 1) return false;
+        if (navCtx.petPosition && m.x === navCtx.petPosition.x && m.y === navCtx.petPosition.y) return false;
+        return true;
       });
       // Reset hidden-monster tracker when message is gone
       if (!waitingForHit && !heldByLichen) {
@@ -353,16 +358,30 @@
         const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
         return dist <= 1;
       });
+      // Count adjacent hostiles excluding known pet (pet is in monsters now)
+      const adjHostileExclPet = navCtx.features ? navCtx.features.monsters.filter(m => {
+        const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
+        if (dist > 1) return false;
+        if (navCtx.petPosition && m.x === navCtx.petPosition.x && m.y === navCtx.petPosition.y) return false;
+        return true;
+      }).length : 0;
 
       // ---- Pet block wait: if pet refuses to swap in a corridor, wait briefly ----
       // to let the pet move on its own turn. Only safe when no hostile monsters
-      // are adjacent.
-      if (navCtx.hadPetBlock && navCtx.isInCorridor && !inCombat &&
-          navCtx.tickCount - navCtx.lastPetWaitTick > 10) {
-        navCtx.lastPetWaitTick = navCtx.tickCount;
-        console.log(`[NAV] Pet block in corridor — waiting 1 tick to let pet move`);
-        navCtx.env.sendKey('.'.charCodeAt(0));
-        return true;
+      // are adjacent (hidden monster will reject wait with "doesn't feel like a good idea").
+      if (navCtx.hadPetBlock && navCtx.isInCorridor && adjHostileExclPet === 0 &&
+          navCtx.tickCount >= navCtx.petBlockWaitUntil) {
+        if (navCtx.petBlockWaitUntil === 0) {
+          // Start a 5-tick wait burst
+          navCtx.petBlockWaitUntil = navCtx.tickCount + 5;
+          console.log(`[NAV] Pet block in corridor — starting 5-tick wait to let pet move`);
+        }
+        if (navCtx.tickCount < navCtx.petBlockWaitUntil) {
+          navCtx.env.sendKey('.'.charCodeAt(0));
+          return true;
+        }
+        // Wait burst done — clear flag and let normal navigation retry
+        navCtx.petBlockWaitUntil = 0;
       }
 
       // ---- Stairs rush: if stairs are visible and close, run to them instead of fighting ----

@@ -118,8 +118,11 @@
     }
 
     // ---- Check for pet blocking corridor exits ----
-    // When stuck with adjacent pet, try to move around it
-    if (navCtx.hadPetBlock || navCtx.stuckCount > 5) {
+    // When stuck with adjacent pet, try to move around it.
+    // Skip this in corridors — the corridor handler has dedicated pet-swap
+    // logic that works better in 1-tile corridors. This handler's perpendicular
+    // fallback just sends '.' in corridors, causing infinite waits.
+    if ((navCtx.hadPetBlock || navCtx.stuckCount > 5) && !navCtx.isInCorridor) {
       // Find adjacent pet
       let petPos = null;
       for (let di = 0; di < 8; di++) {
