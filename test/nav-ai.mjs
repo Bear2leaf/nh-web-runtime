@@ -216,10 +216,32 @@
       }
 
       // ---- Read map and update all derived state ----
+      // MUST run before handlers that read navCtx state (msgs, stuckCount, etc.)
+      // so the buffer is fresh and stuckCount increments every tick.
       NH.updateMapAndState(navCtx);
       if (!navCtx.grid || !navCtx.player) {
         navCtx.env.sendKey('.'.charCodeAt(0));
         return true;
+      }
+
+      // ---- Intro text / display-file safety net ----
+      // Some roles (Valkyrie, Healer, Priest) show a quest intro that can
+      // stall the game if the usual key flow doesn't dismiss it. If we haven't
+      // moved for a while and see intro text markers, send SPACE to advance.
+      // Only active early in the game (tickCount < 500) — intro text never
+      // appears mid-game, and stale buffer messages must not trigger a SPACE
+      // spam loop that produces "Unknown command" and max-ticks.
+      if (navCtx.stuckCount > 30 && navCtx.tickCount < 500) {
+        const introMarkers = ['welcome to NetHack', 'Go bravely with',
+          'hour of destiny has come', 'For the sake of us all'];
+        const hasIntroText = navCtx.msgs.some(m =>
+          introMarkers.some(marker => m.toLowerCase().includes(marker.toLowerCase()))
+        );
+        if (hasIntroText) {
+          console.log(`[NAV] Intro text detected — sending SPACE to advance at tick=${navCtx.tickCount}`);
+          navCtx.env.sendKey(' '.charCodeAt(0));
+          return true;
+        }
       }
 
       // ---- Trap prompt safety net: if we just got a "Really step" message,
@@ -294,10 +316,10 @@
         if (!navCtx._hiddenMonsterStartTick) navCtx._hiddenMonsterStartTick = navCtx.tickCount;
         const hiddenMonsterTicks = navCtx.tickCount - navCtx._hiddenMonsterStartTick;
         navCtx.lastWaitingHitTick = navCtx.tickCount;
-        // After 60 ticks of hidden-monster combat without escaping, try teleport.
+        // After 40 ticks of hidden-monster combat without escaping, try teleport.
         // Only teleport when genuinely stuck (hasn't moved recently) to avoid
         // wasting teleports on monsters that are being killed but slowly.
-        if (hiddenMonsterTicks > 60 && navCtx.stuckCount > 30 &&
+        if (hiddenMonsterTicks > 40 && navCtx.stuckCount > 30 &&
             navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
           console.log(`[NAV] Hidden monster timeout after ${hiddenMonsterTicks} ticks, trying teleport`);
           if (tryTeleport(navCtx)) return true;
@@ -395,26 +417,56 @@
         return true;
       }
 
-      // ---- Oscillation breaker: if stuck bouncing between same tiles, force random direction ----
+      // ---- Oscillation breaker: if stuck bouncing between same tiles, force a direction ----
       // Note: stuckCount is reset on movement, so oscillation can happen with low stuckCount.
       // We use a position-history-based check (isOscillating) instead.
       if (navCtx.isOscillating &&
           navCtx.tickCount - (navCtx.lastOscBreakTick || 0) > 15) {
         navCtx.lastOscBreakTick = navCtx.tickCount;
-        const shuffled = shuffleDirs();
-        for (const di of shuffled) {
+        // Build a scored list of candidate directions. Prefer directions toward
+        // stairs, then walkable tiles, and allow pet swaps as a last resort
+        // (swapping with a pet is better than spinning in place forever).
+        const candidates = [];
+        for (let di = 0; di < 8; di++) {
           if (di === navCtx.lastMoveDir) continue;
           const [dx, dy] = DIRS[di];
           const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (navCtx.grid[ny]||'')[nx] || ' ';
-          if (isWalkable(ch) && !MONSTERS.has(ch) &&
-              !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
-            console.log(`[NAV] Oscillation breaker: forcing dir ${di} at tick=${navCtx.tickCount}`);
-            navCtx.lastMoveDir = di;
-            navCtx.env.sendKey(KEY[di].charCodeAt(0));
+          if (!isWalkable(ch)) continue;
+          if (navCtx.knownTrapPositions.has(nx + ',' + ny)) continue;
+          let score = 0;
+          if (navCtx.stairs) {
+            const distBefore = Math.abs(navCtx.player.x - navCtx.stairs.x) + Math.abs(navCtx.player.y - navCtx.stairs.y);
+            const distAfter = Math.abs(nx - navCtx.stairs.x) + Math.abs(ny - navCtx.stairs.y);
+            score += (distBefore - distAfter) * 10;
+          }
+          if (MONSTERS.has(ch)) {
+            score -= 5; // slight penalty for pets, not a hard block
+          } else {
+            score += 3; // bonus for clear tiles
+          }
+          candidates.push({di, score});
+        }
+        // First pass: prefer non-pet directions
+        candidates.sort((a, b) => b.score - a.score);
+        for (const c of candidates) {
+          const [dx, dy] = DIRS[c.di];
+          const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+          const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+          if (!MONSTERS.has(ch)) {
+            console.log(`[NAV] Oscillation breaker: forcing dir ${c.di} (score=${c.score}) at tick=${navCtx.tickCount}`);
+            navCtx.lastMoveDir = c.di;
+            navCtx.env.sendKey(KEY[c.di].charCodeAt(0));
             return true;
           }
+        }
+        // Second pass: allow pet swap if nothing else is available
+        for (const c of candidates) {
+          console.log(`[NAV] Oscillation breaker: forcing pet-swap dir ${c.di} (score=${c.score}) at tick=${navCtx.tickCount}`);
+          navCtx.lastMoveDir = c.di;
+          navCtx.env.sendKey(KEY[c.di].charCodeAt(0));
+          return true;
         }
       }
 
