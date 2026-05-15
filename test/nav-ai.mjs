@@ -420,7 +420,7 @@
       // ---- Oscillation breaker: if stuck bouncing between same tiles, force a direction ----
       // Note: stuckCount is reset on movement, so oscillation can happen with low stuckCount.
       // We use a position-history-based check (isOscillating) instead.
-      if (navCtx.isOscillating &&
+      if (navCtx.isOscillating && !navCtx._petSwapBurstActive &&
           navCtx.tickCount - (navCtx.lastOscBreakTick || 0) > 15) {
         navCtx.lastOscBreakTick = navCtx.tickCount;
         // Build a scored list of candidate directions. Prefer directions toward
