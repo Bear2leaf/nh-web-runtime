@@ -16,7 +16,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.mjs must be loaded before nav-boulder-pet.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, bfs } = NH;
+  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, bfs } = NH;
 
   /**
    * Handle boulder pushing and pet blocking.
@@ -66,14 +66,12 @@
             return true;
           }
           // Try to kick the boulder (may destroy it or move it)
-          // Kick when push target is a wall, another boulder, or any blocking monster/item
-          if (pushCh === '|' || pushCh === '-' || pushCh === '`' ||
-              MONSTERS.has(pushCh) || (pushCh !== '.' && pushCh !== '#' && pushCh !== ' ' && pushCh !== '>')) {
-            if (!navCtx.legInjured) {
-              env.sendKey(4); // ^D = kick
-              navCtx.pendingKickDir = di;
-              return true;
-            }
+          // Kick when push target is another boulder or a monster (they might move).
+          // Do NOT kick into walls — this causes "You strain a muscle" and wastes turns.
+          if ((pushCh === '`' || MONSTERS.has(pushCh)) && !navCtx.legInjured) {
+            env.sendKey(4); // ^D = kick
+            navCtx.pendingKickDir = di;
+            return true;
           }
         }
         // Push target is walkable but push might fail (boulder stuck) — track failed attempts
@@ -131,14 +129,14 @@
       m.includes('is in the way') || m.includes("doesn't want to swap places")
     );
     if ((petBlockedRecently || navCtx.stuckCount > 5) && !navCtx.isInCorridor) {
-      // Find adjacent pet
+      // Find adjacent pet (only actual pets, not hostiles — combat handles those)
       let petPos = null;
       for (let di = 0; di < 8; di++) {
         const [dx, dy] = DIRS[di];
         const nx = player.x + dx, ny = player.y + dy;
         if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
         const nch = (grid[ny]||'')[nx] || ' ';
-        if (MONSTERS.has(nch)) { petPos = {x: nx, y: ny, di}; break; }
+        if (PET_CHARS.has(nch)) { petPos = {x: nx, y: ny, di}; break; }
       }
       if (petPos) {
         // Try to move around the pet (perpendicular directions)
@@ -157,9 +155,47 @@
             return true;
           }
         }
-        // Can't move around — wait a tick
+        // Can't move around — wait 5 ticks to give pet time to move.
+        // Baseline waited 1 tick, which is not enough for NetHack pets
+        // (they move every ~12 turns). A 5-tick burst is a better trade-off.
+        navCtx._doorwayPetWaitUntil = navCtx.tickCount + 5;
         env.sendKey('.'.charCodeAt(0));
         return true;
+      }
+    }
+    // Multi-tick doorway pet wait burst
+    if (navCtx._doorwayPetWaitUntil && navCtx.tickCount < navCtx._doorwayPetWaitUntil) {
+      env.sendKey('.'.charCodeAt(0));
+      return true;
+    }
+    navCtx._doorwayPetWaitUntil = 0;
+
+    // Pet deadlock escape: if stuck with adjacent pet for a while, move backward
+    // to give the pet space. This breaks true deadlocks where the pet has nowhere
+    // to go (e.g., 1-tile corridor with wall behind pet).
+    if (navCtx.stuckCount > 15 && !navCtx.isInCorridor) {
+      let adjPetDi = -1;
+      for (let di = 0; di < 8; di++) {
+        const [dx, dy] = DIRS[di];
+        const nx = player.x + dx, ny = player.y + dy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        const ch = (grid[ny]||'')[nx] || ' ';
+        if (PET_CHARS.has(ch)) { adjPetDi = di; break; }
+      }
+      if (adjPetDi >= 0) {
+        const backDi = (adjPetDi + 4) % 8;
+        const [bdx, bdy] = DIRS[backDi];
+        const bx = player.x + bdx, by = player.y + bdy;
+        if (bx >= 0 && bx < W && by >= 0 && by < H) {
+          const bch = (grid[by]||'')[bx] || ' ';
+          if (NH.isWalkable(bch) && !MONSTERS.has(bch) &&
+              !navCtx.knownTrapPositions.has(bx + ',' + by)) {
+            console.log(`[NAV] Pet deadlock escape: moving backward dir ${backDi} away from pet`);
+            navCtx.lastMoveDir = backDi;
+            env.sendKey(KEY[backDi].charCodeAt(0));
+            return true;
+          }
+        }
       }
     }
 

@@ -69,6 +69,7 @@
       // Pet block wait tracking
       lastPetWaitTick: 0,
       petBlockWaitUntil: 0,
+      _doorwayPetWaitUntil: 0,
 
       // Hidden monster timeout tracker
       _hiddenMonsterStartTick: 0,
