@@ -122,7 +122,15 @@
     // Skip this in corridors — the corridor handler has dedicated pet-swap
     // logic that works better in 1-tile corridors. This handler's perpendicular
     // fallback just sends '.' in corridors, causing infinite waits.
-    if ((navCtx.hadPetBlock || navCtx.stuckCount > 5) && !navCtx.isInCorridor) {
+    // Only react to actual block/refusal messages (not stale successful swaps).
+    // hadPetBlock stays true for 30 messages, causing this handler to send '.'
+    // for up to 30 ticks after a swap — wasting time and preventing corridor handler
+    // from running when the player is in a corridor on subsequent ticks.
+    const recentMsgs = navCtx.msgs.slice(-3);
+    const petBlockedRecently = recentMsgs.some(m =>
+      m.includes('is in the way') || m.includes("doesn't want to swap places")
+    );
+    if ((petBlockedRecently || navCtx.stuckCount > 5) && !navCtx.isInCorridor) {
       // Find adjacent pet
       let petPos = null;
       for (let di = 0; di < 8; di++) {

@@ -8,7 +8,7 @@
 
 ## 当前性能
 
-**最新 100-trial 批次**: 19% 成功 / 37% 死亡 / 43% 卡住 / 1% max-ticks / 1% 其他
+**最新 100-trial 批次**: 19% 成功 / 31% 死亡 / 47% 卡住 / 1% max-ticks / 2% 其他
 
 | 批次 | 成功 | 死亡 | 卡住 | 备注 |
 |------|------|------|------|------|
@@ -21,7 +21,8 @@
 | **100次最新** | **14% (14/100)** | **38% (38/100)** | **43% (43/100)** | **stairs rush扩展 + lowHp阈值0.7** |
 | **100次当前** | **11% (11/100)** | **38% (38/100)** | **49% (49/100)** | **boulder-pet跳过走廊 + 隐藏怪物排除宠物 + 宠物等待burst** |
 | **100次当前 (d318941)** | **~6% (6/100)** | **~36% (36/100)** | **~56% (56/100)** | **正式基线，高方差** |
-| **100次最新** | **19% (19/100)** | **37% (37/100)** | **43% (43/100)** | **走廊强制方向 + stairs bugfix，成功翻3倍** |
+| **100次最新 (4c547a2)** | **19% (19/100)** | **37% (37/100)** | **43% (43/100)** | **走廊强制方向 + stairs bugfix** |
+| **100次最新** | **19% (19/100)** | **31% (31/100)** | **47% (47/100)** | **+ doorway stale-msg fix + hidden-monster timeout** |
 
 > **关键转变**: 修复 PET_CHARS 和隐藏怪物 stale-message bug 后，**卡住率从 55% 骤降至 ~27%**，但 **死亡率从 31% 上升至 ~45-57%**。AI 不再被宠物/陷阱/隐藏怪物困住，而是死于低级怪物围攻。瓶颈已从"卡住"转为"战斗死亡"。
 > 
@@ -86,6 +87,14 @@
 #### 63. stairs handler 未导入 MONSTERS — ReferenceError 崩溃
 `nav-stairs.mjs` 使用了 `MONSTERS.has(nextCh)` 但未从 `NH` 解构导入。当 `petSwapBlocked=true` 且玩家接近楼梯旁的宠物时，触发 `ReferenceError: MONSTERS is not defined`，导致该 trial 异常终止或行为紊乱。
 **修复**: 导入 `MONSTERS` 和 `PET_CHARS`，并将检查条件改为 `PET_CHARS.has(nextCh)` — 仅跳过宠物，不跳过敌对怪物（ combat 会处理）。
+
+#### 64. boulder-pet handler  stale swap 消息误触发 —  doorway 空等
+`nav-boulder-pet.mjs` 使用 `hadPetBlock`（30 消息缓冲期内任何宠物交互都为 true）。玩家在 doorway 成功 swap 后进入走廊，`hadPetBlock` 仍为 true → boulder-pet handler 发送 '.' 等待，阻止走廊 handler 运行，导致 up to 30 ticks 空等。
+**修复**: 改用最近 3 条消息检查 (`msgs.slice(-3)`)，仅对 `'is in the way'` / `'doesn't want to swap'` 实际阻塞触发。成功 swap 后不再误发 '.'。
+
+#### 65. 隐藏怪物 timeout — 60 ticks 后 teleport
+`"Are you waiting to get hit?"` 消息可能因隐形怪物无法命中而持续存在。AI 无限 `'F'` 攻击直至 stuckCount>1200。
+**修复**: 追踪 `_hiddenMonsterStartTick`，当隐藏怪物消息持续 **60 ticks** 且 **stuckCount>30** 时尝试 teleport。避免在玩家仍能移动/战斗时浪费 teleport。
 
 ### 架构/基础设施
 

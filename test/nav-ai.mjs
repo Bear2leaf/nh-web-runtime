@@ -267,10 +267,20 @@
         navCtx._hiddenMonsterStartTick = 0;
       }
       if ((waitingForHit || heldByLichen) && !hasVisibleAdjMonster) {
-        // Keep attacking hidden monsters indefinitely. Giving up and resuming
-        // normal navigation just leads to stuckCount accumulation because the
-        // hidden monster blocks all movement. Better to fight to the death.
+        // Keep attacking hidden monsters, but add a timeout. Some hidden monsters
+        // can't be hit (floating eye, wrong position, trap under player) and the
+        // player just wastes ticks attacking air until stuckCount exceeds 1200.
+        if (!navCtx._hiddenMonsterStartTick) navCtx._hiddenMonsterStartTick = navCtx.tickCount;
+        const hiddenMonsterTicks = navCtx.tickCount - navCtx._hiddenMonsterStartTick;
         navCtx.lastWaitingHitTick = navCtx.tickCount;
+        // After 60 ticks of hidden-monster combat without escaping, try teleport.
+        // Only teleport when genuinely stuck (hasn't moved recently) to avoid
+        // wasting teleports on monsters that are being killed but slowly.
+        if (hiddenMonsterTicks > 60 && navCtx.stuckCount > 30 &&
+            navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS) {
+          console.log(`[NAV] Hidden monster timeout after ${hiddenMonsterTicks} ticks, trying teleport`);
+          if (tryTeleport(navCtx)) return true;
+        }
         console.log(`[NAV] Hidden monster detected (waiting to get hit${heldByLichen ? ', held' : ''}) at tick=${navCtx.tickCount}`);
         const shuffled = shuffleDirs();
 
