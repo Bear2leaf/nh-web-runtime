@@ -100,8 +100,11 @@
       }
       navCtx.petPositionTick = navCtx.tickCount;
     }
-    // Clear stale pet position after 60 ticks without interaction
-    if (navCtx.petPositionTick && navCtx.tickCount - navCtx.petPositionTick > 60) {
+    // Clear stale pet position after 300 ticks without interaction.
+    // Pets follow the player closely; they rarely disappear within a few hundred
+    // ticks. A longer timeout prevents accidental pet attacks when swap messages
+    // age out of the buffer during long corridor walks.
+    if (navCtx.petPositionTick && navCtx.tickCount - navCtx.petPositionTick > 300) {
       navCtx.petPosition = null;
       navCtx.petPositionTick = 0;
     }
@@ -133,7 +136,7 @@
     navCtx.maxHp = navCtx.env.getMaxHp();
     navCtx.hungerText = navCtx.env.getHunger();
     navCtx.hpRatio = navCtx.maxHp > 0 ? navCtx.currentHp / navCtx.maxHp : 1;
-    navCtx.lowHp = navCtx.hpRatio < 0.5;
+    navCtx.lowHp = navCtx.hpRatio < 0.7;
     navCtx.hungerTrimmed = (navCtx.hungerText || '').trim();
     const isHungry = navCtx.hungerTrimmed === 'Hungry' || navCtx.hungerTrimmed === 'Weak' ||
                      navCtx.hungerTrimmed === 'Fainted' || navCtx.hungerTrimmed === 'Fainting';

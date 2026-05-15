@@ -66,6 +66,12 @@
       // Stairs tracking
       lastStairsPos: null,
 
+      // Pet block wait tracking
+      lastPetWaitTick: 0,
+
+      // Hidden monster timeout tracker
+      _hiddenMonsterStartTick: 0,
+
       // Door tracking
       lastDoorDir: null,
       doorAttemptCount: 0,
@@ -251,7 +257,14 @@
         const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
         return dist <= 1;
       });
+      // Reset hidden-monster tracker when message is gone
+      if (!waitingForHit && !heldByLichen) {
+        navCtx._hiddenMonsterStartTick = 0;
+      }
       if ((waitingForHit || heldByLichen) && !hasVisibleAdjMonster) {
+        // Keep attacking hidden monsters indefinitely. Giving up and resuming
+        // normal navigation just leads to stuckCount accumulation because the
+        // hidden monster blocks all movement. Better to fight to the death.
         navCtx.lastWaitingHitTick = navCtx.tickCount;
         console.log(`[NAV] Hidden monster detected (waiting to get hit${heldByLichen ? ', held' : ''}) at tick=${navCtx.tickCount}`);
         const shuffled = shuffleDirs();
@@ -335,20 +348,47 @@
         }
       }
 
+      // Pre-compute inCombat for use by pet-wait and stairs rush
+      const inCombat = navCtx.features && navCtx.features.monsters.some(m => {
+        const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
+        return dist <= 1;
+      });
+
+      // ---- Pet block wait: if pet refuses to swap in a corridor, wait briefly ----
+      // to let the pet move on its own turn. Only safe when no hostile monsters
+      // are adjacent.
+      if (navCtx.hadPetBlock && navCtx.isInCorridor && !inCombat &&
+          navCtx.tickCount - navCtx.lastPetWaitTick > 10) {
+        navCtx.lastPetWaitTick = navCtx.tickCount;
+        console.log(`[NAV] Pet block in corridor — waiting 1 tick to let pet move`);
+        navCtx.env.sendKey('.'.charCodeAt(0));
+        return true;
+      }
+
       // ---- Stairs rush: if stairs are visible and close, run to them instead of fighting ----
       // Getting to stairs is the primary goal. Adjacent monsters can be ignored if
-      // stairs are within reach — descending ends all combat immediately.
+      // stairs are within reach — descending ends combat instantly.
       if (navCtx.stairs) {
-        const sDist = Math.abs(navCtx.stairs.x - navCtx.player.x) +
-                      Math.abs(navCtx.stairs.y - navCtx.player.y);
-        // When low HP or adjacent monster, rush to stairs at any distance — descending ends combat instantly
-        const inCombat = navCtx.features && navCtx.features.monsters.some(m => {
-          const dist = Math.abs(m.x - navCtx.player.x) + Math.abs(m.y - navCtx.player.y);
-          return dist <= 1;
-        });
-        const rushThreshold = (navCtx.lowHp || inCombat) ? 50 : 8;
-        if (sDist <= rushThreshold) {
-          if (NH.handleStairs && NH.handleStairs(navCtx)) return true;
+        // Always rush to visible stairs — descending is the primary goal
+        if (NH.handleStairs && NH.handleStairs(navCtx)) return true;
+      } else if (navCtx.lastStairsPos && (navCtx.lowHp || inCombat)) {
+        // Stairs not visible but we remember where they were — rush there when in danger
+        const ls = navCtx.lastStairsPos;
+        const next = NH.bfs(navCtx.player.x, navCtx.player.y, ls.x, ls.y,
+                            navCtx.grid, navCtx.openedDoors, navCtx.knownTrapPositions);
+        if (next) {
+          const idx = DIRS.findIndex(([ddx,ddy]) =>
+            ddx === (next.x - navCtx.player.x) && ddy === (next.y - navCtx.player.y));
+          if (idx >= 0) {
+            const nextCh = (navCtx.grid[next.y]||'')[next.x] || ' ';
+            // Don't walk into hostile monsters, but swapping with pet is OK
+            if (!MONSTERS.has(nextCh) || NH.PET_CHARS.has(nextCh)) {
+              console.log(`[NAV] Rushing to last known stairs at ${ls.x},${ls.y}`);
+              navCtx.lastMoveDir = idx;
+              env.sendKey(KEY[idx].charCodeAt(0));
+              return true;
+            }
+          }
         }
       }
 
@@ -393,6 +433,41 @@
 
       // ---- Stairs navigation ----
       if (NH.handleStairs && NH.handleStairs(navCtx)) return true;
+
+      // ---- Pet deadlock escape: if stuck for a while with adjacent monster,
+      // try to move away from it BEFORE handleBoulderPet sends '.'. ----
+      if (navCtx.stuckCount > 50 && !navCtx.lowHp) {
+        let adjMonsterDi = -1;
+        for (let di = 0; di < 8; di++) {
+          const [dx, dy] = DIRS[di];
+          const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+          const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+          if (MONSTERS.has(ch)) { adjMonsterDi = di; break; }
+        }
+        if (adjMonsterDi >= 0) {
+          const [pdx, pdy] = DIRS[adjMonsterDi];
+          const awayDirs = [];
+          for (let di = 0; di < 8; di++) {
+            const [dx, dy] = DIRS[di];
+            if (dx * pdx + dy * pdy > 0) continue;
+            const nx = navCtx.player.x + dx, ny = navCtx.player.y + dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+            const ch = (navCtx.grid[ny]||'')[nx] || ' ';
+            if (isWalkable(ch) && !MONSTERS.has(ch) &&
+                !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+              awayDirs.push(di);
+            }
+          }
+          if (awayDirs.length > 0) {
+            const di = awayDirs[Math.floor(Math.random() * awayDirs.length)];
+            console.log(`[NAV] Pet deadlock escape: stuck=${navCtx.stuckCount}, moving away from adjacent monster in dir ${di}`);
+            navCtx.lastMoveDir = di;
+            navCtx.env.sendKey(KEY[di].charCodeAt(0));
+            return true;
+          }
+        }
+      }
 
       // ---- Boulder / Pet blocking (before corridor, so pet swap gets priority) ----
       if (NH.handleBoulderPet && NH.handleBoulderPet(navCtx)) return true;

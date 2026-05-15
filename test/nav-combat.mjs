@@ -52,8 +52,15 @@
       const maxHp = navCtx.maxHp || env.getMaxHp ? env.getMaxHp() : 10;
       const hpPercent = maxHp > 0 ? (currentHp / maxHp) : 1;
       
-      // Kite: if HP < 60% and we can retreat to a safe tile, try to back away
-      if (hpPercent < 0.6) {
+      // Kite: if HP < 30% or surrounded by 2+ monsters, try to retreat.
+      // On DL1 most monsters are weak; fighting a single monster is usually
+      // faster and safer than kiting (which can trap us in corridors/doors).
+      const adjMonsterCount = (() => { let c=0; for (let di=0; di<8; di++) {
+        const [ddx,ddy]=DIRS[di]; const nx=player.x+ddx, ny=player.y+ddy;
+        if (nx<0||nx>=W||ny<0||ny>=H) continue;
+        if (MONSTERS.has((grid[ny]||'')[nx]||' ')) c++;
+      } return c; })();
+      if (hpPercent < 0.3 || adjMonsterCount >= 2) {
         // Find a retreat direction (not towards any monster, walkable, no trap)
         const monsterDirs = new Set();
         for (let di = 0; di < 8; di++) {
