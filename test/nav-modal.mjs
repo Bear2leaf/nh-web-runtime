@@ -111,20 +111,10 @@
             console.log(`[NAV-MODAL] Trap prompt detected, marking trap at ${trapKey} (dir=${trapDir})`);
           }
         } else if (navCtx.player) {
-          // Fallback: mark all adjacent walkable tiles as potential traps
-          const { DIRS, W, H } = NH;
-          for (const [dx, dy] of DIRS) {
-            const tx = navCtx.player.x + dx, ty = navCtx.player.y + dy;
-            if (tx < 0 || tx >= W || ty < 0 || ty >= H) continue;
-            const ch = (navCtx.grid[ty]||'')[tx] || ' ';
-            if (NH.isWalkable(ch)) {
-              const trapKey = tx + ',' + ty;
-              if (!navCtx.knownTrapPositions.has(trapKey)) {
-                navCtx.knownTrapPositions.add(trapKey);
-                console.log(`[NAV-MODAL] Trap prompt with no direction, marking adjacent ${trapKey}`);
-              }
-            }
-          }
+          // Direction unknown — don't mark any tiles. Marking all adjacent tiles
+          // as traps permanently blocks the player in rooms. Just decline the step
+          // and let pathfinding try a different route next tick.
+          console.log(`[NAV-MODAL] Trap prompt with unknown direction — declining step without marking traps`);
         }
         return true;
       }

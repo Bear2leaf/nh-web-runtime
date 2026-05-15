@@ -185,16 +185,25 @@
         if (PET_CHARS.has(ch)) { adjPetDi = di; break; }
       }
       if (adjPetDi >= 0) {
+        // Try backward first, then diagonals away from the pet
         const backDi = (adjPetDi + 4) % 8;
-        const [bdx, bdy] = DIRS[backDi];
-        const bx = player.x + bdx, by = player.y + bdy;
-        if (bx >= 0 && bx < W && by >= 0 && by < H) {
-          const bch = (grid[by]||'')[bx] || ' ';
-          if (NH.isWalkable(bch) && !MONSTERS.has(bch) &&
-              !navCtx.knownTrapPositions.has(bx + ',' + by)) {
-            console.log(`[NAV] Pet deadlock escape: moving backward dir ${backDi} away from pet (stuck=${navCtx.stuckCount}, swapBurst=${petSwapBurst})`);
-            navCtx.lastMoveDir = backDi;
-            env.sendKey(KEY[backDi].charCodeAt(0));
+        const escapeDirs = [
+          backDi,
+          (backDi + 1) % 8,
+          (backDi + 7) % 8,
+          (backDi + 2) % 8,
+          (backDi + 6) % 8
+        ];
+        for (const edi of escapeDirs) {
+          const [edx, edy] = DIRS[edi];
+          const ex = player.x + edx, ey = player.y + edy;
+          if (ex < 0 || ex >= W || ey < 0 || ey >= H) continue;
+          const ech = (grid[ey]||'')[ex] || ' ';
+          if (NH.isWalkable(ech) && !MONSTERS.has(ech) &&
+              !navCtx.knownTrapPositions.has(ex + ',' + ey)) {
+            console.log(`[NAV] Pet deadlock escape: moving dir ${edi} away from pet (stuck=${navCtx.stuckCount}, swapBurst=${petSwapBurst})`);
+            navCtx.lastMoveDir = edi;
+            env.sendKey(KEY[edi].charCodeAt(0));
             return true;
           }
         }

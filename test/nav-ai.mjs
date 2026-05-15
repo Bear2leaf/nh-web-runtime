@@ -244,8 +244,9 @@
         return true;
       }
 
-      // Detect hidden adjacent monster: "Are you waiting to get hit?" means
-      // there's an invisible monster adjacent, or the player is held (lichen).
+      // Detect hidden adjacent monster:
+      // "Are you waiting to get hit?" = invisible/hidden monster adjacent, or held (lichen).
+      // "It bites!/hits!/misses!" = unseen attacker (invisible or hidden).
       // Don't wait — move or attack aggressively.
       // Fire every tick the message is present; the message may persist but
       // we need to keep trying to escape or kill the monster.
@@ -253,6 +254,7 @@
       const lastFewMsgs = navCtx.msgs.slice(-5);
       const waitingForHit = lastFewMsgs.some(m => m.includes('waiting to get hit'));
       const heldByLichen = lastFewMsgs.some(m => m.includes('cannot escape'));
+      const unseenAttack = lastFewMsgs.some(m => /^It\s+(bites|hits|misses)!/.test(m));
       // If there's a visible adjacent hostile monster, let handleCombat deal with it first.
       // The hidden-monster handler can run next tick if combat doesn't clear the message.
       // Skip the known pet — combat won't attack it anyway, so we should handle the
@@ -263,11 +265,12 @@
         if (navCtx.petPosition && m.x === navCtx.petPosition.x && m.y === navCtx.petPosition.y) return false;
         return true;
       });
+      const hiddenMonsterActive = waitingForHit || heldByLichen || unseenAttack;
       // Reset hidden-monster tracker when message is gone
-      if (!waitingForHit && !heldByLichen) {
+      if (!hiddenMonsterActive) {
         navCtx._hiddenMonsterStartTick = 0;
       }
-      if ((waitingForHit || heldByLichen) && !hasVisibleAdjMonster) {
+      if (hiddenMonsterActive && !hasVisibleAdjMonster) {
         // Keep attacking hidden monsters, but add a timeout. Some hidden monsters
         // can't be hit (floating eye, wrong position, trap under player) and the
         // player just wastes ticks attacking air until stuckCount exceeds 1200.
@@ -282,7 +285,7 @@
           console.log(`[NAV] Hidden monster timeout after ${hiddenMonsterTicks} ticks, trying teleport`);
           if (tryTeleport(navCtx)) return true;
         }
-        console.log(`[NAV] Hidden monster detected (waiting to get hit${heldByLichen ? ', held' : ''}) at tick=${navCtx.tickCount}`);
+        console.log(`[NAV] Hidden monster detected (${waitingForHit ? 'waiting' : ''}${heldByLichen ? 'held' : ''}${unseenAttack ? 'unseen-attack' : ''}) at tick=${navCtx.tickCount}`);
         const shuffled = shuffleDirs();
 
         // If held by a monster (e.g. lichen), moving won't work — attack immediately.
@@ -321,18 +324,36 @@
           }
         }
         // Truly trapped or held — attack systematically in all directions.
-        // Skip the known pet position to avoid making pets hostile.
+        // Skip walls (hitting walls wastes turns) and skip the known pet position.
         let attackDir = (navCtx.hiddenMonsterAttackDir || 0) % 8;
         const knownPet = navCtx.petPosition;
         let attempts = 0;
         while (attempts < 8) {
           const [adx, ady] = DIRS[attackDir];
           const ax = navCtx.player.x + adx, ay = navCtx.player.y + ady;
-          if (!knownPet || ax !== knownPet.x || ay !== knownPet.y) {
-            break; // Safe direction found
+          if (ax < 0 || ax >= W || ay < 0 || ay >= H) {
+            attackDir = (attackDir + 1) % 8;
+            attempts++;
+            continue;
+          }
+          const ach = (navCtx.grid[ay]||'')[ax] || ' ';
+          const isPetTile = knownPet && ax === knownPet.x && ay === knownPet.y;
+          const isWall = !isWalkable(ach);
+          if (!isPetTile && !isWall) {
+            break; // Valid attack direction found
           }
           attackDir = (attackDir + 1) % 8;
           attempts++;
+        }
+        if (attempts >= 8) {
+          // All directions are walls/pets/out-of-bounds — can't attack effectively.
+          // Try teleport as last resort, otherwise just wait (hitting walls wastes turns).
+          if (navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS && tryTeleport(navCtx)) {
+            return true;
+          }
+          console.log(`[NAV] Hidden monster fully trapped — all directions blocked, waiting at tick=${navCtx.tickCount}`);
+          navCtx.env.sendKey('.'.charCodeAt(0));
+          return true;
         }
         navCtx.hiddenMonsterAttackDir = attackDir + 1;
         console.log(`[NAV] Hidden monster trapped — force-attacking direction ${attackDir} at tick=${navCtx.tickCount}`);
