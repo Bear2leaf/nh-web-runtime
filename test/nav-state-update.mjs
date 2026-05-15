@@ -80,7 +80,7 @@
 
     // Count recent pet swap messages for deadlock detection (leapfrogging resets stuckCount)
     navCtx._recentPetSwapCount = navCtx.msgs.slice(-10).filter(m => m.includes('swap places with')).length;
-    if ((navCtx._recentPetSwapCount || 0) >= 3) {
+    if ((navCtx._recentPetSwapCount || 0) >= 2) {
       navCtx._petSwapBurstActive = true;
       navCtx._petSwapBurstTick = navCtx.tickCount;
     } else if (navCtx._petSwapBurstActive && navCtx.tickCount - (navCtx._petSwapBurstTick || 0) > 8) {
