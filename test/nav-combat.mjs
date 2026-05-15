@@ -12,7 +12,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-combat.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, isWalkable, shuffleDirs } = NH;
+  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, shuffleDirs } = NH;
 
   /**
    * Handle combat: fight adjacent monsters directly, including invisible ones.
@@ -52,23 +52,26 @@
       const maxHp = navCtx.maxHp || env.getMaxHp ? env.getMaxHp() : 10;
       const hpPercent = maxHp > 0 ? (currentHp / maxHp) : 1;
       
-      // Kite: if HP < 30% or surrounded by 2+ monsters, try to retreat.
+      // Kite: if HP < 30% or surrounded by 2+ hostile monsters, try to retreat.
       // On DL1 most monsters are weak; fighting a single monster is usually
       // faster and safer than kiting (which can trap us in corridors/doors).
-      const adjMonsterCount = (() => { let c=0; for (let di=0; di<8; di++) {
+      // Count hostile adjacent monsters EXCLUDING pets — a pet nearby should
+      // not trigger unnecessary retreat.
+      const adjHostileCount = (() => { let c=0; for (let di=0; di<8; di++) {
         const [ddx,ddy]=DIRS[di]; const nx=player.x+ddx, ny=player.y+ddy;
         if (nx<0||nx>=W||ny<0||ny>=H) continue;
-        if (MONSTERS.has((grid[ny]||'')[nx]||' ')) c++;
+        const ch = (grid[ny]||'')[nx]||' ';
+        if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) c++;
       } return c; })();
-      if (hpPercent < 0.3 || adjMonsterCount >= 2) {
-        // Find a retreat direction (not towards any monster, walkable, no trap)
+      if (hpPercent < 0.3 || adjHostileCount >= 2) {
+        // Find all safe retreat directions (not towards any monster, walkable, no trap)
         const monsterDirs = new Set();
         for (let di = 0; di < 8; di++) {
           const [ddx, ddy] = DIRS[di];
           const nx = player.x + ddx, ny = player.y + ddy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (grid[ny]||'')[nx] || ' ';
-          if (MONSTERS.has(ch)) {
+          if (MONSTERS.has(ch) && !PET_CHARS.has(ch)) {
             monsterDirs.add(di);
           }
         }
@@ -87,21 +90,35 @@
             }
           }
         }
-        // Fallback: try any safe non-monster direction
+        // Fallback: score safe directions and pick the best one.
+        // Prefer directions toward stairs (if visible) and away from monsters.
+        let bestDi = -1, bestScore = -Infinity;
         for (let di = 0; di < 8; di++) {
           if (monsterDirs.has(di)) continue;
           const [ddx, ddy] = DIRS[di];
           const nx = player.x + ddx, ny = player.y + ddy;
           if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
           const ch = (grid[ny]||'')[nx] || ' ';
-          if (isWalkable(ch) && !MONSTERS.has(ch)) {
-            if (!navCtx.knownTrapPositions || !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
-              console.log(`[NAV] Kiting fallback: moving dir=${di} at low HP`);
-              navCtx.lastMoveDir = di;
-              env.sendKey(KEY[di].charCodeAt(0));
-              return true;
-            }
+          if (!isWalkable(ch) || MONSTERS.has(ch)) continue;
+          if (navCtx.knownTrapPositions && navCtx.knownTrapPositions.has(nx + ',' + ny)) continue;
+          let score = 0;
+          // Closer to stairs = better
+          if (navCtx.stairs) {
+            const distBefore = Math.abs(player.x - navCtx.stairs.x) + Math.abs(player.y - navCtx.stairs.y);
+            const distAfter = Math.abs(nx - navCtx.stairs.x) + Math.abs(ny - navCtx.stairs.y);
+            score += (distBefore - distAfter) * 5;
           }
+          // Farther from the hostile we're kiting from = better
+          score += Math.abs(nx - adjHostile.x) + Math.abs(ny - adjHostile.y);
+          // Continue momentum (avoid oscillation)
+          if (navCtx.lastMoveDir >= 0 && di === navCtx.lastMoveDir) score += 2;
+          if (score > bestScore) { bestScore = score; bestDi = di; }
+        }
+        if (bestDi >= 0) {
+          console.log(`[NAV] Kiting fallback: moving dir=${bestDi} at low HP`);
+          navCtx.lastMoveDir = bestDi;
+          env.sendKey(KEY[bestDi].charCodeAt(0));
+          return true;
         }
       }
       

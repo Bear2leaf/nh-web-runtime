@@ -28,6 +28,7 @@
 | **100次改进 #2** | **21% (21/100)** | **33% (33/100)** | **44% (44/100)** | **同上，第二批次确认** |
 | **200次合并** | **17.5% (35/200)** | **34% (68/200)** | **45% (90/200)** | **两次100次合并，方差较大** |
 | **200次当前 (f6bf9d5)** | **16.5% (33/200)** | **35% (70/200)** | **47% (94/200)** | **door/trap修复 + pet burst检测** |
+| **200次合并 (dd63bc4)** | **20% (40/200)** | **34.5% (69/200)** | **44.5% (89/200)** | **combat kiting宠物排除+楼梯导向** |
 
 > **关键转变**: 修复 PET_CHARS 和隐藏怪物 stale-message bug 后，**卡住率从 55% 骤降至 ~27%**，但 **死亡率从 31% 上升至 ~45-57%**。AI 不再被宠物/陷阱/隐藏怪物困住，而是死于低级怪物围攻。瓶颈已从"卡住"转为"战斗死亡"。
 >
@@ -133,6 +134,18 @@
 - `nav-state-update.mjs`: 统计最近 10 条消息中 `"swap places with"` 出现次数，≥3 时设置 `_petSwapBurstActive`（持续 8 ticks）
 - `nav-boulder-pet.mjs`:  backward escape 在 `petSwapBurst` 时忽略 `isInCorridor` 限制，走廊中也能后退破局
 - `nav-stairs.mjs`: stairs rush 时若 `_petSwapBurstActive` 为 true，不 path 穿过宠物，让 boulder-pet handler 处理死锁
+
+#### 69. combat kiting 排除宠物 — 避免误撤退
+`adjMonsterCount` 计数时把相邻宠物也计入，导致"1 敌对怪物 + 1 宠物"就触发撤退。撤退可能退入更危险的位置（走廊死角、另一怪物旁）。
+**修复**: `nav-combat.mjs` 的 `adjMonsterCount` 改用 `MONSTERS.has(ch) && !PET_CHARS.has(ch)`，仅计真正敌对怪物。
+
+#### 70. combat kiting 楼梯导向 — 撤退时向楼梯靠拢
+原有 kiting fallback 选择**第一个**安全方向，可能越退越远，最终被困在远离楼梯的死角。
+**修复**: fallback 改为评分制：
+- 向可见 stairs 靠近的方向 +5 分/格距离缩减
+- 离当前敌对怪物更远的方向 +1 分/格
+- 保持动量（`lastMoveDir`）+2 分
+选择最高分方向撤退，提高逃向楼梯的概率。
 
 ### 架构/基础设施
 
