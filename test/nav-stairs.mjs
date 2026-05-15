@@ -47,8 +47,12 @@
         const nextCh = (grid[next.y]||'')[next.x] || ' ';
         // If pet swap is blocked, don't path through pets — it causes oscillation.
         // Only skip pets (PET_CHARS), not hostile monsters — combat handles those.
-        if (PET_CHARS.has(nextCh) && navCtx.petSwapBlocked) {
-          return false;
+        // Also skip pets when recent swaps indicate leapfrogging (handleBoulderPet
+        // will deal with the deadlock).
+        if (PET_CHARS.has(nextCh)) {
+          if (navCtx.petSwapBlocked || navCtx._petSwapBurstActive) {
+            return false;
+          }
         }
         // Open door on the path
         if (nextCh === '+') {

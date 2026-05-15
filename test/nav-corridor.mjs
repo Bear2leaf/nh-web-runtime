@@ -420,6 +420,11 @@
     if (stuckCount > 30 && isAdjacentToWall(player.x, player.y, grid)) {
       const curKey = player.x + ',' + player.y;
       if (!searchedWallPos.has(curKey)) {
+        // Don't search while standing on a known trap — it's useless and spams
+        // "Waiting doesn't feel like a good idea" messages.
+        if (navCtx.knownTrapPositions && navCtx.knownTrapPositions.has(curKey)) {
+          return false;
+        }
         searchedWallPos.add(curKey);
         console.log(`[NAV] Searching from corridor at ${curKey}`);
         navCtx.lastSearchTick = tickCount;

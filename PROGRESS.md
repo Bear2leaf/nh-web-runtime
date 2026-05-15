@@ -27,6 +27,7 @@
 | **100次改进 #1** | **14% (14/100)** | **35% (35/100)** | **46% (46/100)** | **PET_CHARS + 5-tick wait + kick fix** |
 | **100次改进 #2** | **21% (21/100)** | **33% (33/100)** | **44% (44/100)** | **同上，第二批次确认** |
 | **200次合并** | **17.5% (35/200)** | **34% (68/200)** | **45% (90/200)** | **两次100次合并，方差较大** |
+| **200次当前 (f6bf9d5)** | **16.5% (33/200)** | **35% (70/200)** | **47% (94/200)** | **door/trap修复 + pet burst检测** |
 
 > **关键转变**: 修复 PET_CHARS 和隐藏怪物 stale-message bug 后，**卡住率从 55% 骤降至 ~27%**，但 **死亡率从 31% 上升至 ~45-57%**。AI 不再被宠物/陷阱/隐藏怪物困住，而是死于低级怪物围攻。瓶颈已从"卡住"转为"战斗死亡"。
 >
@@ -36,7 +37,7 @@
 > - `lowHp` 阈值 0.5 → 0.7：更早触发撤退和 stairs rush，降低战斗死亡（38% vs ~50%）
 > - stairs rush 扩展：即使 stairs 不可见，危急时仍向 `lastStairsPos` 移动，提高逃生成功率（14% vs ~10%）
 > 
-> 当前架构: 并行运行 `node test/node-runner.js [max_tries] [concurrency]`，100次约 3-4min
+> 当前架构: 并行运行 `node test/node-runner.js [max_tries] [concurrency]`，100次约 3-4min，200次约 6-7min
 
 ## 已修复的问题
 
@@ -115,6 +116,23 @@
 #### 65. 隐藏怪物 timeout — 60 ticks 后 teleport
 `"Are you waiting to get hit?"` 消息可能因隐形怪物无法命中而持续存在。AI 无限 `'F'` 攻击直至 stuckCount>1200。
 **修复**: 追踪 `_hiddenMonsterStartTick`，当隐藏怪物消息持续 **60 ticks** 且 **stuckCount>30** 时尝试 teleport。避免在玩家仍能移动/战斗时浪费 teleport。
+
+### 2026/05/15 第三批改进
+
+#### 66. door handler "You see no door there" 死循环修复
+门 handler 对相邻 `+` 发送 `'o'` 后，若该门实际已不存在（如被怪物打开/破坏，或坐标映射错误），游戏返回 `"You see no door there"`。handler 未处理此消息，下 tick 仍发现同一 `+`（`features.doors` 来自 scanMap，仍包含该门），继续发送 `'o'` → 无限循环。
+**修复**: `"You see no door there"` 消息出现时，将最近邻门标记为 `triedDoors`，跳过该门。
+
+#### 67. 走廊搜索陷阱 spam 修复
+`nav-corridor.mjs` 在 `stuckCount>30` 且 `isAdjacentToWall` 时搜索当前位置。若玩家站在已知陷阱上，`stuckCount` 因陷阱限制无法下降，handler 每 30 ticks 搜索一次，每次收到 `"Waiting doesn't feel like a good idea"`。
+**修复**: 搜索前检查 `knownTrapPositions.has(curKey)`，站在已知陷阱上时直接 `return false`，让 teleport/hard-stuck handler 接管。
+
+#### 68. 宠物 swap burst 检测 — 突破 leapfrogging 死锁
+ doorway/走廊中宠物与玩家反复 swap（leapfrogging）时，`stuckCount` 因每次 swap 都移动而始终为 0，原有 `stuckCount>15` 后退逃逸永不触发。
+**修复**: 
+- `nav-state-update.mjs`: 统计最近 10 条消息中 `"swap places with"` 出现次数，≥3 时设置 `_petSwapBurstActive`（持续 8 ticks）
+- `nav-boulder-pet.mjs`:  backward escape 在 `petSwapBurst` 时忽略 `isInCorridor` 限制，走廊中也能后退破局
+- `nav-stairs.mjs`: stairs rush 时若 `_petSwapBurstActive` 为 true，不 path 穿过宠物，让 boulder-pet handler 处理死锁
 
 ### 架构/基础设施
 

@@ -98,8 +98,9 @@
       }
     }
 
-    // Detect "kick at empty space" from previous kick — mark door as tried
-    if (navCtx.msgs.some(m => m.includes('kick at empty space'))) {
+    // Detect "kick at empty space" or "You see no door there" from previous
+    // open attempt — mark nearest door as tried so we don't spam 'o' forever.
+    if (navCtx.msgs.some(m => m.includes('kick at empty space') || m.includes('You see no door there'))) {
       for (const door of untriedDoors) {
         const ddx = door.x - player.x, ddy = door.y - player.y;
         if (Math.abs(ddx) <= 1 && Math.abs(ddy) <= 1) {

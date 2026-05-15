@@ -78,6 +78,15 @@
     const sawPetRefuseSwap = navCtx.msgs.some(m => m.includes("doesn't want to swap places"));
     navCtx.hadPetBlock = sawPetSwap || sawPetBlockMsg || sawPetRefuseSwap;
 
+    // Count recent pet swap messages for deadlock detection (leapfrogging resets stuckCount)
+    navCtx._recentPetSwapCount = navCtx.msgs.slice(-10).filter(m => m.includes('swap places with')).length;
+    if ((navCtx._recentPetSwapCount || 0) >= 3) {
+      navCtx._petSwapBurstActive = true;
+      navCtx._petSwapBurstTick = navCtx.tickCount;
+    } else if (navCtx._petSwapBurstActive && navCtx.tickCount - (navCtx._petSwapBurstTick || 0) > 8) {
+      navCtx._petSwapBurstActive = false;
+    }
+
     // Track pet position from swap/block messages (use NEW messages only)
     // Compare current buffer with previous to detect genuinely new events
     const prevSwapCount = navCtx._prevSwapMsgCount || 0;

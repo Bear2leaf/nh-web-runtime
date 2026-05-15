@@ -173,7 +173,9 @@
     // Pet deadlock escape: if stuck with adjacent pet for a while, move backward
     // to give the pet space. This breaks true deadlocks where the pet has nowhere
     // to go (e.g., 1-tile corridor with wall behind pet).
-    if (navCtx.stuckCount > 15 && !navCtx.isInCorridor) {
+    // Also trigger on recent pet swap message burst (leapfrogging resets stuckCount).
+    const petSwapBurst = navCtx._petSwapBurstActive;
+    if ((navCtx.stuckCount > 15 || petSwapBurst) && (!navCtx.isInCorridor || petSwapBurst)) {
       let adjPetDi = -1;
       for (let di = 0; di < 8; di++) {
         const [dx, dy] = DIRS[di];
@@ -190,7 +192,7 @@
           const bch = (grid[by]||'')[bx] || ' ';
           if (NH.isWalkable(bch) && !MONSTERS.has(bch) &&
               !navCtx.knownTrapPositions.has(bx + ',' + by)) {
-            console.log(`[NAV] Pet deadlock escape: moving backward dir ${backDi} away from pet`);
+            console.log(`[NAV] Pet deadlock escape: moving backward dir ${backDi} away from pet (stuck=${navCtx.stuckCount}, swapBurst=${petSwapBurst})`);
             navCtx.lastMoveDir = backDi;
             env.sendKey(KEY[backDi].charCodeAt(0));
             return true;
