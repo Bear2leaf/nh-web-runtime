@@ -56,6 +56,12 @@
         }
         // Open door on the path
         if (nextCh === '+') {
+          const doorKey = next.x + ',' + next.y;
+          if (triedDoors.has(doorKey)) {
+            // Door is known to be locked/broken — don't spam 'o', let wall search or
+            // alternative pathfinding deal with it.
+            return false;
+          }
           env.sendKey('o'.charCodeAt(0));
           navCtx.pendingDir = DIRS.findIndex(([ddx,ddy]) =>
             ddx===(next.x-player.x) && ddy===(next.y-player.y));

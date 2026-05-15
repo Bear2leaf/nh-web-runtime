@@ -107,6 +107,7 @@
           const doorKey = door.x + ',' + door.y;
           if (!triedDoors.has(doorKey)) {
             triedDoors.add(doorKey);
+            if (navCtx.openedDoors) navCtx.openedDoors.delete(doorKey);
             console.log(`[NAV] Door ${doorKey} caused 'kick at empty space', marking as tried`);
           }
         }
@@ -126,6 +127,7 @@
         const actualCh = (grid[door.y]||'')[door.x] || ' ';
         if (actualCh !== '+') {
           triedDoors.add(doorKey);
+          if (navCtx.openedDoors) navCtx.openedDoors.delete(doorKey);
           navCtx.doorOpenAttempts = 0;
           navCtx.lastDoorPos = null;
           console.log(`[NAV] Door at ${doorKey} is no longer '+', marking as tried`);
@@ -144,6 +146,7 @@
           if (kickCount >= MAX_KICK_ATTEMPTS) {
             // Exhausted all kick attempts — mark as tried and trigger wall search immediately
             triedDoors.add(doorKey);
+            if (navCtx.openedDoors) navCtx.openedDoors.delete(doorKey);
             navCtx.doorOpenAttemptsMap.set(doorKey, 0);
             navCtx.enclosedTick = Math.max(navCtx.enclosedTick, 100);
             console.log(`[NAV] Door at ${doorKey} still locked after ${MAX_KICK_ATTEMPTS} kicks, giving up — forcing wall search`);
@@ -151,6 +154,7 @@
           }
           if (legInjured) {
             triedDoors.add(doorKey);
+            if (navCtx.openedDoors) navCtx.openedDoors.delete(doorKey);
             navCtx.doorOpenAttemptsMap.set(doorKey, 0);
             console.log(`[NAV] Door at ${doorKey} is locked, leg injured — giving up`);
             continue;

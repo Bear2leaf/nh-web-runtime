@@ -347,12 +347,28 @@
         }
         if (attempts >= 8) {
           // All directions are walls/pets/out-of-bounds — can't attack effectively.
-          // Try teleport as last resort, otherwise just wait (hitting walls wastes turns).
+          // Try teleport as last resort. If no teleport, attack the first in-bounds
+          // non-pet direction (even if it's a wall). Attacking a wall wastes a turn
+          // but so does waiting, and attacking doesn't trigger the "waiting to get hit"
+          // feedback loop that keeps the hidden-monster handler active indefinitely.
           if (navCtx.teleportAttempts < MAX_TELEPORT_ATTEMPTS && tryTeleport(navCtx)) {
             return true;
           }
-          console.log(`[NAV] Hidden monster fully trapped — all directions blocked, waiting at tick=${navCtx.tickCount}`);
-          navCtx.env.sendKey('.'.charCodeAt(0));
+          let fallbackDir = (navCtx.hiddenMonsterAttackDir || 0) % 8;
+          for (let i = 0; i < 8; i++) {
+            const fdi = (fallbackDir + i) % 8;
+            const [fdx, fdy] = DIRS[fdi];
+            const fx = navCtx.player.x + fdx, fy = navCtx.player.y + fdy;
+            if (fx < 0 || fx >= W || fy < 0 || fy >= H) continue;
+            const fch = (navCtx.grid[fy]||'')[fx] || ' ';
+            if (knownPet && fx === knownPet.x && fy === knownPet.y) continue;
+            fallbackDir = fdi;
+            break;
+          }
+          navCtx.hiddenMonsterAttackDir = fallbackDir + 1;
+          console.log(`[NAV] Hidden monster fully trapped — attacking fallback dir ${fallbackDir} at tick=${navCtx.tickCount}`);
+          navCtx.env.sendKey('F'.charCodeAt(0));
+          navCtx.pendingDir = fallbackDir;
           return true;
         }
         navCtx.hiddenMonsterAttackDir = attackDir + 1;
@@ -398,15 +414,21 @@
         return true;
       }).length : 0;
 
-      // ---- Pet block wait: if pet refuses to swap in a corridor, wait briefly ----
-      // to let the pet move on its own turn. Only safe when no hostile monsters
-      // are adjacent (hidden monster will reject wait with "doesn't feel like a good idea").
-      if (navCtx.hadPetBlock && navCtx.isInCorridor && adjHostileExclPet === 0 &&
+      // ---- Pet block wait: if pet REFUSES to swap in a corridor, wait briefly ----
+      // to let the pet move on its own turn. Only wait on refusal messages
+      // ("is in the way", "doesn't want to swap"); successful swaps are normal
+      // corridor movement — waiting just wastes ticks and prevents progress.
+      // Only safe when no hostile monsters are adjacent (hidden monster will
+      // reject wait with "doesn't feel like a good idea").
+      const petRefusedSwap = navCtx.msgs.slice(-5).some(m =>
+        m.includes('is in the way') || m.includes("doesn't want to swap places")
+      );
+      if (petRefusedSwap && navCtx.isInCorridor && adjHostileExclPet === 0 &&
           navCtx.tickCount >= navCtx.petBlockWaitUntil) {
         if (navCtx.petBlockWaitUntil === 0) {
           // Start a 5-tick wait burst
           navCtx.petBlockWaitUntil = navCtx.tickCount + 5;
-          console.log(`[NAV] Pet block in corridor — starting 5-tick wait to let pet move`);
+          console.log(`[NAV] Pet refused swap in corridor — starting 5-tick wait to let pet move`);
         }
         if (navCtx.tickCount < navCtx.petBlockWaitUntil) {
           navCtx.env.sendKey('.'.charCodeAt(0));
