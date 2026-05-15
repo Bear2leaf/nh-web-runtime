@@ -13,7 +13,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-corridor.js'); return; }
 
-  const { W, H, DIRS, KEY, MONSTERS, isWalkable, bfs, shuffleDirs,
+  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, isWalkable, bfs, shuffleDirs,
           isInDeadEnd, tryTeleport, MAX_TELEPORT_ATTEMPTS } = NH;
 
   /**
@@ -237,10 +237,48 @@
         if (!navCtx.petSwapConsecutive) navCtx.petSwapConsecutive = 0;
         navCtx.petSwapConsecutive++;
 
-        // Too many consecutive swaps — give up and let other handlers run
-        if (navCtx.petSwapConsecutive > 4) {
-          console.log(`[NAV] Too many pet swaps (${navCtx.petSwapConsecutive}), giving up on corridor handling`);
+        // Too many consecutive swaps — force a consistent direction instead of
+        // giving up. Letting other handlers run just causes more direction flips.
+        if (navCtx.petSwapConsecutive > 2) {
+          console.log(`[NAV] Too many pet swaps (${navCtx.petSwapConsecutive}), forcing consistent direction`);
           navCtx.petSwapConsecutive = 0;
+          // Try to keep moving in lastMoveDir (away from pet after a swap)
+          if (lastMoveDir >= 0) {
+            const [ldx, ldy] = DIRS[lastMoveDir];
+            const lnx = player.x + ldx, lny = player.y + ldy;
+            if (lnx >= 0 && lnx < W && lny >= 0 && lny < H) {
+              const lch = (grid[lny]||'')[lnx] || ' ';
+              if (isWalkable(lch) && !navCtx.knownTrapPositions.has(lnx + ',' + lny)) {
+                navCtx.lastMoveDir = lastMoveDir;
+                env.sendKey(KEY[lastMoveDir].charCodeAt(0));
+                return true;
+              }
+            }
+          }
+          // Fallback: any corridor direction
+          for (let di = 0; di < 8; di++) {
+            const [dx, dy] = DIRS[di];
+            const nx = player.x + dx, ny = player.y + dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+            const ch = (grid[ny]||'')[nx] || ' ';
+            if (ch === '#' && !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+              navCtx.lastMoveDir = di;
+              env.sendKey(KEY[di].charCodeAt(0));
+              return true;
+            }
+          }
+          // Last resort: any walkable direction
+          for (const di of shuffleDirs()) {
+            const [dx, dy] = DIRS[di];
+            const nx = player.x + dx, ny = player.y + dy;
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+            const ch = (grid[ny]||'')[nx] || ' ';
+            if (isWalkable(ch) && !navCtx.knownTrapPositions.has(nx + ',' + ny)) {
+              navCtx.lastMoveDir = di;
+              env.sendKey(KEY[di].charCodeAt(0));
+              return true;
+            }
+          }
           corridorVisitCounts.clear();
           navCtx.corridorOscillationTick = 0;
           return false;
@@ -250,7 +288,7 @@
         for (let y = 0; y < H; y++) {
           for (let x = 0; x < W; x++) {
             const ch = (grid[y]||'')[x] || ' ';
-            if (MONSTERS.has(ch)) {
+            if (PET_CHARS.has(ch)) {
               const dist = Math.abs(x - player.x) + Math.abs(y - player.y);
               if (dist <= 2 && dist < nearestPetDist) {
                 nearestPetDist = dist; nearestPet = {x, y};

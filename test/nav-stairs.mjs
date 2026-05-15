@@ -13,7 +13,7 @@
   const NH = global.NHNav;
   if (!NH) { console.error('[NAV] nav-core.js must be loaded before nav-stairs.js'); return; }
 
-  const { W, H, DIRS, KEY, bfs, bfsAvoiding, bfsRush } = NH;
+  const { W, H, DIRS, KEY, MONSTERS, PET_CHARS, bfs, bfsAvoiding, bfsRush } = NH;
 
   /**
    * Navigate to stairs if visible. Opens doors blocking the path.
@@ -45,8 +45,9 @@
         navCtx.wallSearchPhase = false;
         navCtx.enclosedTick = 0;
         const nextCh = (grid[next.y]||'')[next.x] || ' ';
-        // If pet swap is blocked, don't path through pets — it causes oscillation
-        if (MONSTERS.has(nextCh) && navCtx.petSwapBlocked) {
+        // If pet swap is blocked, don't path through pets — it causes oscillation.
+        // Only skip pets (PET_CHARS), not hostile monsters — combat handles those.
+        if (PET_CHARS.has(nextCh) && navCtx.petSwapBlocked) {
           return false;
         }
         // Open door on the path
